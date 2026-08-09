@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scanner"
+version = "0.1.0"
+description = "Open source dependency risk scanner: resolves transitive dependencies and reports known vulnerabilities."
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "requests>=2.31",
+    "packaging>=23.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+scanner = "scanner.cli:main"
+
+[tool.setuptools]
+packages = ["scanner"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
