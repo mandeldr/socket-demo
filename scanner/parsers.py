@@ -3,14 +3,8 @@ from pathlib import Path
 
 from packaging.requirements import InvalidRequirement, Requirement
 
-from scanner.models import (
-    Dependency,
-    EcoSystem,
-    PackageKey,
-    ParseResult,
-    SkippedLine,
-    SkipReason,
-)
+from scanner.enums import EcoSystem, SkipReason
+from scanner.models import Dependency, PackageKey, ParseResult, SkippedLine
 
 # pip's own comment pattern (pip/_internal/req/req_file.py): "#" starts a
 # comment at the beginning of a line or after whitespace. A URL fragment like
