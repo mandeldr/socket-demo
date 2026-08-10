@@ -1,0 +1,56 @@
+# Hostile fixture: everything that shows up in real requirements files.
+# The parser must not crash on any of this. Lines it cannot turn into a
+# dependency should be skipped and recorded, not silently dropped.
+
+# --- pip options, not requirements (start with - or --) ---
+--index-url https://pypi.org/simple
+--extra-index-url https://example.internal/simple
+--find-links ./wheels
+--no-binary :all:
+
+# --- includes: "also read this file" ---
+-r nested.txt
+-c constraints.txt
+
+# --- editable installs ---
+-e .
+-e ./local-package
+-e git+https://github.com/psf/requests.git#egg=requests
+
+# --- VCS and direct URLs ---
+git+https://github.com/pallets/flask.git@3.0.0#egg=flask
+https://files.pythonhosted.org/packages/example-1.0.0-py3-none-any.whl
+file:///opt/wheels/internal-1.0.0.whl
+
+# --- environment markers ---
+importlib-metadata==7.0.1 ; python_version < "3.10"
+tomli==2.0.1; python_version<"3.11"
+pywin32==306 ; sys_platform == "win32"
+
+# --- extras, multiple and with spaces ---
+celery[redis,auth]==5.3.6
+uvicorn[standard] >= 0.27.0
+
+# --- whitespace and casing chaos ---
+   Flask==3.0.0
+BOTO3==1.34.34
+my_package==1.0.0
+some.other.package==2.0.0
+sqlalchemy==2.0.25
+
+
+# --- a version that does NOT exist on PyPI (same shape as Support Exercise 01) ---
+urllib3==3.0.0
+
+# --- a package that does not exist at all ---
+this-package-definitely-does-not-exist-12345==1.0.0
+
+# --- unpinned, needs resolution before it can be queried ---
+rich
+attrs
+
+# --- duplicate of an earlier entry, different spelling ---
+FLASK==3.0.0
+
+# --- empty extras and odd but legal spacing ---
+packaging  ==  23.2
