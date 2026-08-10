@@ -1,6 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 
 from packaging.utils import canonicalize_name
 
@@ -15,10 +16,22 @@ class Source(Enum):
     OSV = "osv"
 
 
+class SkipReason(Enum):
+    PIP_OPTION = "pip option"
+    EDITABLE = "editable install"
+    VCS = "version control reference"
+    DIRECT_URL = "direct URL"
+    MISSING_INCLUDE = "included file not found"
+    INVALID = "could not be parsed"
+
+
 @dataclass(frozen=True)  # so it's hashable and usable in a set
 class PackageKey:
     name: str
-    version: str
+    # None when the manifest does not pin an exact version (a range, or no
+    # specifier at all). Such a package cannot be queried against an advisory
+    # database until resolution picks a concrete version for it.
+    version: str | None
     eco_system: EcoSystem
 
     def __post_init__(self) -> None:
@@ -42,6 +55,20 @@ class Dependency:
     is_direct: bool
     depth: int
     parent: PackageKey | None
+
+
+@dataclass
+class SkippedLine:
+    line_number: int
+    content: str
+    reason: SkipReason
+    source: Path | None = None
+
+
+@dataclass
+class ParseResult:
+    dependencies: list[Dependency] = field(default_factory=list)
+    skipped: list[SkippedLine] = field(default_factory=list)
 
 
 @dataclass

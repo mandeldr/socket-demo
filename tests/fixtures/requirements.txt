@@ -1,0 +1,27 @@
+# Clean fixture: well-formed lines only.
+# Every line here should parse successfully.
+
+# --- exact pins ---
+flask==3.0.0
+django==5.0.1
+requests==2.31.0
+urllib3==2.2.1
+
+# --- version ranges ---
+numpy>=1.26.0
+pandas>=2.0.0,<3.0.0
+click~=8.1.7
+
+# --- no version specified ---
+pyyaml
+
+# --- extras ---
+requests[security]==2.31.0
+
+# --- name spellings that must canonicalize to the same project ---
+# (Flask -> flask, zope.interface -> zope-interface)
+Flask==3.0.0
+zope.interface==6.1
+
+# --- trailing comment on a real requirement ---
+cryptography==42.0.1  # pinned for FIPS compliance
