@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 
 from scanner.parsers import parse_requirements_txt
+from scanner.pypi import PyPIClient
+from scanner.resolver import DEFAULT_MAX_DEPTH, resolve
 
 # Exit codes. Chosen to match the convention CI tools use (and Socket's own
 # `socket ci`): 0 means "ran and passed", non-zero means something a build
@@ -45,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="output format (default: console)",
     )
     parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=DEFAULT_MAX_DEPTH,
+        help=f"how deep to follow transitive dependencies (default: {DEFAULT_MAX_DEPTH})",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         metavar="PATH",
@@ -72,17 +80,26 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: not a file: {args.manifest}", file=sys.stderr)
         return EXIT_USAGE_ERROR
 
-    result = parse_requirements_txt(args.manifest)
+    parsed = parse_requirements_txt(args.manifest)
+    print(f"{args.manifest}: {len(parsed.dependencies)} direct dependencies")
+    if parsed.skipped:
+        print(f"  ({len(parsed.skipped)} lines skipped)")
 
-    print(f"{args.manifest}: {len(result.dependencies)} dependencies")
-    for dependency in result.dependencies:
-        version = dependency.key.version or "(unpinned)"
-        print(f"  {dependency.key.name} {version}")
+    print("resolving...", flush=True)
+    graph = resolve(parsed.dependencies, PyPIClient().fetch, max_depth=args.max_depth)
 
-    if result.skipped:
-        print(f"\nskipped {len(result.skipped)} lines:")
-        for skipped in result.skipped:
-            print(f"  line {skipped.line_number}: {skipped.reason.value}")
+    resolved = [n for n in graph.nodes.values() if not n.unresolved]
+    transitive = [n for n in resolved if n.depth > 0]
+    print(f"\n{len(resolved)} packages ({len(graph.roots)} direct, {len(transitive)} transitive)")
+
+    for node in sorted(resolved, key=lambda n: (n.depth, n.key.name)):
+        indent = "  " * node.depth
+        print(f"  {indent}{node.key.name} {node.key.version}")
+
+    if graph.errors:
+        print(f"\ncould not resolve {len(graph.errors)}:")
+        for error in graph.errors:
+            print(f"  {error.package}: {error.error}")
 
     # TODO(stage 2): query OSV for these packages and report vulnerabilities.
     return EXIT_OK

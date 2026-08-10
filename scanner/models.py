@@ -1,28 +1,10 @@
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
 
 from packaging.utils import canonicalize_name
 
-
-class EcoSystem(Enum):
-    PYTHON = "PyPI"
-    NPM = "npm"
-
-
-class Source(Enum):
-    GITHUB = "ghsa"
-    OSV = "osv"
-
-
-class SkipReason(Enum):
-    PIP_OPTION = "pip option"
-    EDITABLE = "editable install"
-    VCS = "version control reference"
-    DIRECT_URL = "direct URL"
-    MISSING_INCLUDE = "included file not found"
-    INVALID = "could not be parsed"
+from scanner.enums import EcoSystem, SkipReason, Source
 
 
 @dataclass(frozen=True)  # so it's hashable and usable in a set
@@ -41,10 +23,10 @@ class PackageKey:
         the same project (PEP 503), so we canonicalize on construction to avoid
         counting one package more than once.
         """
-        # 1. PEP 503 canonical form: lowercase, runs of -_. collapsed to a single -
+        # PEP 503 canonical form: lowercase, runs of -_. collapsed to a single -
         normalized_name = canonicalize_name(self.name.strip())
 
-        # 2. Bypass the frozen dataclass restriction during initialization only
+        # Bypass the frozen dataclass restriction during initialization only
         object.__setattr__(self, "name", normalized_name)
 
 
@@ -91,27 +73,6 @@ class Finding:
 
 
 @dataclass
-class GraphNode:
-    key: PackageKey
-    children: list[PackageKey]
-    depth: int
-    unresolved: bool  # metadata missing or package not found
-
-
-@dataclass
-class ResolutionError:
-    error: str
-
-
-@dataclass
-class DependencyGraph:
-    nodes: dict[PackageKey, GraphNode]
-    roots: list[PackageKey]
-    cycles: list[list[PackageKey]]
-    errors: list[ResolutionError]
-
-
-@dataclass
 class ScanStats:
     total_dependencies: int
     direct_count: int
@@ -133,7 +94,6 @@ class ScanReport:
     generated_at: datetime
     stats: ScanStats
     findings: list[Finding]
-    cycles: list[list[PackageKey]]
     errors: list[ScanError]
     sources_queried: list[Source]
     sources_failed: list[Source]

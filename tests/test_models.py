@@ -7,7 +7,8 @@ project, so equivalent spellings must compare (and hash) equal.
 
 import pytest
 
-from scanner.models import EcoSystem, PackageKey
+from scanner.enums import EcoSystem
+from scanner.models import PackageKey
 
 
 @pytest.mark.parametrize(

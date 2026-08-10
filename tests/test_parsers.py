@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from scanner.models import EcoSystem, SkipReason
+from scanner.enums import EcoSystem, SkipReason
 from scanner.parsers import parse_requirements_txt
 
 
