@@ -265,3 +265,34 @@ def _finding_for_test() -> Vulnerability:
         summary="bad",
         url="https://example.com",
     )
+
+
+def test_hiding_findings_does_not_weaken_the_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    """--min-severity is a display choice. If it could turn a failing build
+    green, anyone could silence CI by passing a flag."""
+
+    class FindsHigh:
+        def query(self, packages) -> QueryResult:
+            return QueryResult({packages[0]: [_finding_for_test()]})
+
+    monkeypatch.setattr("scanner.cli.OSVClient", FindsHigh)
+    path = manifest(tmp_path, "flask==1.0\n")
+
+    assert main([str(path), "--min-severity", "CRITICAL"]) == EXIT_VULNERABILITIES_FOUND
+
+
+def test_ignoring_a_finding_does_clear_the_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    """Unlike hiding, ignoring is a decision that the finding does not count."""
+
+    class FindsHigh:
+        def query(self, packages) -> QueryResult:
+            return QueryResult({packages[0]: [_finding_for_test()]})
+
+    monkeypatch.setattr("scanner.cli.OSVClient", FindsHigh)
+    path = manifest(tmp_path, "flask==1.0\n")
+
+    assert main([str(path), "--ignore", "CVE-2025-1"]) == EXIT_OK

@@ -149,5 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         note(f"wrote {args.output}")
 
     # Non-zero so a CI job fails on a vulnerable dependency, which is the whole
-    # point of running this in a pipeline.
-    return EXIT_VULNERABILITIES_FOUND if report["findings"] else EXIT_OK
+    # point of running this in a pipeline. Counted from the summary rather than
+    # the printed findings: --min-severity decides what is shown, and a display
+    # flag that could turn a failing build green would be a way to silence CI.
+    return EXIT_VULNERABILITIES_FOUND if report["summary"]["total_vulnerabilities"] else EXIT_OK
