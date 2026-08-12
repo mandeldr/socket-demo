@@ -88,9 +88,13 @@ def main(argv: list[str] | None = None) -> int:
     print("resolving...", flush=True)
     graph = resolve(parsed.dependencies, PyPIClient().fetch, max_depth=args.max_depth)
 
-    resolved = [n for n in graph.nodes.values() if not n.unresolved]
+    # Count direct packages from the resolved set, not from graph.roots: roots
+    # includes packages that failed to resolve, so using it makes the counts
+    # disagree with the list printed below (and with each other).
+    resolved = [n for n in graph.nodes.values() if not n.failed]
+    direct = [n for n in resolved if n.depth == 0]
     transitive = [n for n in resolved if n.depth > 0]
-    print(f"\n{len(resolved)} packages ({len(graph.roots)} direct, {len(transitive)} transitive)")
+    print(f"\n{len(resolved)} packages ({len(direct)} direct, {len(transitive)} transitive)")
 
     for node in sorted(resolved, key=lambda n: (n.depth, n.key.name)):
         indent = "  " * node.depth

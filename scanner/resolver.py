@@ -1,5 +1,6 @@
 from collections import deque
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from packaging.requirements import Requirement
@@ -9,15 +10,37 @@ from scanner.enums import EcoSystem
 from scanner.graph import DependencyGraph, ResolutionError
 from scanner.models import Dependency, PackageKey
 
-# Given a package name and the constraint on it, return the version chosen and
-# that version's own requirements. None means the package could not be found.
-Fetch = Callable[[str, SpecifierSet], tuple[str, list[Requirement]] | None]
+
+@dataclass
+class FetchResult:
+    """What a metadata lookup produced, or why it did not.
+
+    Carrying the reason rather than just None means the report can tell a user
+    the difference between "that package does not exist" and "no release of it
+    satisfies the version you pinned", which need different fixes.
+    """
+
+    version: str | None = None
+    requirements: list[Requirement] = field(default_factory=list)
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
+
+
+# Given a package name and the constraint on it, look up the version to use.
+Fetch = Callable[[str, SpecifierSet], FetchResult]
 
 DEFAULT_MAX_DEPTH = 5
 
 
-class _Pending(NamedTuple):
-    """A package waiting to be looked up, and how we got to it."""
+class _Lookup(NamedTuple):
+    """A package waiting to be looked up, and how we got to it.
+
+    It carries a name and a constraint but no version, because the version is
+    what the lookup is for. Once it has one it becomes a PackageKey.
+    """
 
     name: str
     spec: SpecifierSet
@@ -39,37 +62,34 @@ def resolve(
     queue = deque(
         # raw_spec carries the constraint from the manifest, so `flask==3.0.0`
         # resolves to 3.0.0 rather than whatever is currently latest
-        _Pending(dep.key.name, SpecifierSet(dep.raw_spec), 0, None)
+        _Lookup(dep.key.name, SpecifierSet(dep.raw_spec), 0, None)
         for dep in direct
     )
 
     while queue:
-        item = queue.popleft()
+        name, spec, depth, parent = queue.popleft()
 
-        found = fetch(item.name, item.spec)
-        version, requirements = found if found else (None, [])
-        key = PackageKey(item.name, version, EcoSystem.PYTHON)
+        metadata = fetch(name, spec)
+        key = PackageKey(name, metadata.version, EcoSystem.PYTHON)
 
-        if item.parent is None:
+        if parent is None:
             if key not in graph.roots:
                 graph.roots.append(key)
         else:
-            graph.add_edge(item.parent, key)
+            graph.add_edge(parent, key)
 
         # Already seen: a shared dependency, a duplicate, or a cycle coming
         # back around. Either way there is nothing left to expand.
         if key in graph.nodes:
             continue
 
-        graph.add_node(key, item.depth, parent=item.parent, unresolved=found is None)
-        if found is None:
-            graph.errors.append(ResolutionError(item.name, "could not be found"))
+        graph.add_node(key, depth, parent=parent, failed=not metadata.ok)
+        if not metadata.ok:
+            graph.errors.append(ResolutionError(name, metadata.error or "unknown error"))
             continue
 
-        if item.depth < max_depth:
-            for requirement in requirements:
-                queue.append(
-                    _Pending(requirement.name, requirement.specifier, item.depth + 1, key)
-                )
+        if depth < max_depth:
+            for requirement in metadata.requirements:
+                queue.append(_Lookup(requirement.name, requirement.specifier, depth + 1, key))
 
     return graph

@@ -32,9 +32,7 @@ def test_empty_file_yields_nothing(tmp_path: Path) -> None:
 
 
 def test_blank_lines_and_comments_are_ignored(tmp_path: Path) -> None:
-    result = parse_requirements_txt(
-        write(tmp_path, "# a comment\n\n   \n# another\n")
-    )
+    result = parse_requirements_txt(write(tmp_path, "# a comment\n\n   \n# another\n"))
     assert result.dependencies == []
     assert result.skipped == []  # comments are not "skipped lines", they are noise
 
@@ -131,7 +129,6 @@ def test_spaces_around_operator(tmp_path: Path) -> None:
     assert dep.key.version == "23.2"
 
 
-
 # environment markers
 
 
@@ -197,10 +194,6 @@ def test_a_hash_inside_a_url_is_not_treated_as_a_comment(tmp_path: Path) -> None
     result = parse_requirements_txt(write(tmp_path, line + "\n"))
     (skipped,) = result.skipped
     assert skipped.content == line  # not truncated at the '#'
-
-
-
-
 
 
 # the fixtures on disk

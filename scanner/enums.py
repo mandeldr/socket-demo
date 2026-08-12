@@ -26,5 +26,4 @@ class SkipReason(Enum):
     EDITABLE = "editable install"
     VCS = "version control reference"
     DIRECT_URL = "direct URL"
-    MISSING_INCLUDE = "included file not found"
     INVALID = "could not be parsed"

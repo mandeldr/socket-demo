@@ -7,7 +7,7 @@ network. Same idea as passing `fetch` into the resolver.
 import pytest
 from packaging.specifiers import SpecifierSet
 
-from scanner.pypi import PyPIClient
+from scanner.pypi import NOT_ON_PYPI, PyPIClient
 
 
 class FakeResponse:
@@ -56,10 +56,9 @@ def test_returns_the_latest_version_and_its_requirements() -> None:
         }
     )
     result = client.fetch("flask", SpecifierSet())
-    assert result is not None
-    version, requirements = result
-    assert version == "3.0.0"
-    assert [r.name for r in requirements] == ["Werkzeug", "Jinja2"]
+    assert result.ok
+    assert result.version == "3.0.0"
+    assert [r.name for r in result.requirements] == ["Werkzeug", "Jinja2"]
 
 
 def test_requires_dist_of_none_means_no_dependencies() -> None:
@@ -68,12 +67,15 @@ def test_requires_dist_of_none_means_no_dependencies() -> None:
         {"https://pypi.org/pypi/certifi/json": package_page("2024.2.2", None, ["2024.2.2"])}
     )
     result = client.fetch("certifi", SpecifierSet())
-    assert result == ("2024.2.2", [])
+    assert result.version == "2024.2.2"
+    assert result.requirements == []
 
 
-def test_unknown_package_returns_none() -> None:
+def test_unknown_package_says_it_does_not_exist() -> None:
     client, _ = client_for({})
-    assert client.fetch("does-not-exist", SpecifierSet()) is None
+    result = client.fetch("does-not-exist", SpecifierSet())
+    assert not result.ok
+    assert result.error == NOT_ON_PYPI
 
 
 def test_a_pinned_version_is_used_directly() -> None:
@@ -86,10 +88,8 @@ def test_a_pinned_version_is_used_directly() -> None:
         }
     )
     result = client.fetch("flask", SpecifierSet("==2.3.0"))
-    assert result is not None
-    version, requirements = result
-    assert version == "2.3.0"
-    assert [r.name for r in requirements] == ["click"]
+    assert result.version == "2.3.0"
+    assert [r.name for r in result.requirements] == ["click"]
 
 
 def test_a_range_picks_the_highest_matching_release() -> None:
@@ -102,15 +102,18 @@ def test_a_range_picks_the_highest_matching_release() -> None:
         }
     )
     result = client.fetch("flask", SpecifierSet(">=2.0,<3.0"))
-    assert result is not None
-    assert result[0] == "2.3.0"
+    assert result.version == "2.3.0"
 
 
 def test_no_release_satisfies_the_constraint() -> None:
+    """The package exists; the pin does not. Different problem, different message."""
     client, _ = client_for(
         {"https://pypi.org/pypi/flask/json": package_page("3.0.0", [], ["3.0.0"])}
     )
-    assert client.fetch("flask", SpecifierSet("<2.0")) is None
+    result = client.fetch("flask", SpecifierSet("<2.0"))
+    assert not result.ok
+    assert result.error == "no release satisfies <2.0"
+    assert result.error != NOT_ON_PYPI
 
 
 def test_the_latest_release_is_not_refetched() -> None:
@@ -146,12 +149,15 @@ def test_a_network_error_returns_none_rather_than_raising() -> None:
             raise OSError("connection reset")
 
     client = PyPIClient(session=ExplodingSession())
-    assert client.fetch("flask", SpecifierSet()) is None
+    result = client.fetch("flask", SpecifierSet())
+    assert not result.ok
+    assert "could not reach PyPI" in (result.error or "")
 
 
-def test_malformed_json_returns_none() -> None:
+def test_malformed_json_is_reported_as_such() -> None:
     client, _ = client_for({"https://pypi.org/pypi/flask/json": FakeResponse(None, 200)})
-    assert client.fetch("flask", SpecifierSet()) is None
+    result = client.fetch("flask", SpecifierSet())
+    assert result.error == "PyPI returned invalid JSON"
 
 
 def test_an_unparseable_requirement_is_skipped() -> None:
@@ -164,13 +170,49 @@ def test_an_unparseable_requirement_is_skipped() -> None:
         }
     )
     result = client.fetch("flask", SpecifierSet())
-    assert result is not None
-    assert [r.name for r in result[1]] == ["click", "jinja2"]
+    assert [r.name for r in result.requirements] == ["click", "jinja2"]
 
 
 @pytest.mark.parametrize("status", [500, 502, 503])
-def test_a_server_error_returns_none(status: int) -> None:
+def test_a_server_error_names_the_status(status: int) -> None:
     client, _ = client_for(
         {"https://pypi.org/pypi/flask/json": FakeResponse({}, status_code=status)}
     )
-    assert client.fetch("flask", SpecifierSet()) is None
+    result = client.fetch("flask", SpecifierSet())
+    assert result.error == f"PyPI returned HTTP {status}"
+
+
+def test_optional_extras_are_not_required_dependencies() -> None:
+    """`pip install pandas` does not install its test suite."""
+    client, _ = client_for(
+        {
+            "https://pypi.org/pypi/pandas/json": package_page(
+                "2.3.3",
+                [
+                    "numpy>=1.22.4",
+                    "python-dateutil>=2.8.2",
+                    'pytest>=7.3.2; extra == "test"',
+                    'sphinx; extra == "docs"',
+                    "hypothesis>=6.46.1; extra == 'test'",
+                ],
+                ["2.3.3"],
+            )
+        }
+    )
+    result = client.fetch("pandas", SpecifierSet())
+    assert [r.name for r in result.requirements] == ["numpy", "python-dateutil"]
+
+
+def test_platform_markers_are_kept() -> None:
+    """Unlike extras, these describe where it installs, not whether."""
+    client, _ = client_for(
+        {
+            "https://pypi.org/pypi/thing/json": package_page(
+                "1.0",
+                ['pywin32; sys_platform == "win32"', 'tomli; python_version < "3.11"'],
+                ["1.0"],
+            )
+        }
+    )
+    result = client.fetch("thing", SpecifierSet())
+    assert [r.name for r in result.requirements] == ["pywin32", "tomli"]

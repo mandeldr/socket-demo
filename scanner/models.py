@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 
 from packaging.utils import canonicalize_name
@@ -62,38 +61,3 @@ class Vulnerability:
     severity: str = ""
     summary: str = ""
     url: str = ""
-
-
-@dataclass
-class Finding:
-    package: PackageKey
-    vulnerability: Vulnerability
-    path: list[PackageKey]
-    is_direct: bool
-
-
-@dataclass
-class ScanStats:
-    total_dependencies: int
-    direct_count: int
-    transitive_count: int
-    vulnerable_count: int
-    vulnerable_pct: float
-    by_severity: dict[str, int]
-
-
-@dataclass
-class ScanError:
-    error: str
-
-
-@dataclass
-class ScanReport:
-    manifest_path: str
-    ecosystem: EcoSystem
-    generated_at: datetime
-    stats: ScanStats
-    findings: list[Finding]
-    errors: list[ScanError]
-    sources_queried: list[Source]
-    sources_failed: list[Source]
