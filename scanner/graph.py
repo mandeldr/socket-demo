@@ -18,7 +18,7 @@ class GraphNode:
     # gives the most direct explanation of why a package is present.
     # None for a direct dependency: it came from the manifest.
     parent: PackageKey | None = None
-    unresolved: bool = False  # metadata missing or package not found
+    failed: bool = False  # the lookup did not produce a version
 
 
 @dataclass
@@ -38,9 +38,9 @@ class DependencyGraph:
         key: PackageKey,
         depth: int,
         parent: PackageKey | None = None,
-        unresolved: bool = False,
+        failed: bool = False,
     ) -> None:
-        self.nodes[key] = GraphNode(key, depth, parent=parent, unresolved=unresolved)
+        self.nodes[key] = GraphNode(key, depth, parent=parent, failed=failed)
 
     def add_edge(self, parent: PackageKey, child: PackageKey) -> None:
         node = self.nodes.get(parent)

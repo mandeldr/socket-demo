@@ -8,7 +8,7 @@ from packaging.requirements import Requirement
 
 from scanner.enums import EcoSystem
 from scanner.models import Dependency, PackageKey
-from scanner.resolver import resolve
+from scanner.resolver import FetchResult, resolve
 
 
 def key(name: str, version: str | None = "1.0") -> PackageKey:
@@ -17,18 +17,17 @@ def key(name: str, version: str | None = "1.0") -> PackageKey:
 
 def direct(*names: str) -> list[Dependency]:
     return [
-        Dependency(key(n), raw_spec="==1.0", is_direct=True, depth=0, parent=None)
-        for n in names
+        Dependency(key(n), raw_spec="==1.0", is_direct=True, depth=0, parent=None) for n in names
     ]
 
 
 def fake_index(index: dict[str, list[str]]):
     """Build a fetch function from {package: [requirement strings]}."""
 
-    def fetch(name: str, _spec) -> tuple[str, list[Requirement]] | None:
+    def fetch(name: str, _spec) -> FetchResult:
         if name not in index:
-            return None
-        return "1.0", [Requirement(r) for r in index[name]]
+            return FetchResult(error="no such package on PyPI")
+        return FetchResult("1.0", [Requirement(r) for r in index[name]])
 
     return fetch
 
@@ -123,7 +122,7 @@ def test_an_unknown_package_is_recorded_not_fatal() -> None:
         fake_index({"a": ["ghost==1.0"], "b": []}),
     )
     # no version: we never got far enough to learn one
-    assert graph.nodes[key("ghost", None)].unresolved is True
+    assert graph.nodes[key("ghost", None)].failed is True
     assert graph.errors
 
 
@@ -133,7 +132,7 @@ def test_one_unknown_package_does_not_stop_the_others() -> None:
         fake_index({"b": []}),  # `a` is missing entirely
     )
     assert key("b") in graph.nodes
-    assert graph.nodes[key("a", None)].unresolved is True
+    assert graph.nodes[key("a", None)].failed is True
 
 
 def test_duplicate_direct_dependencies_collapse() -> None:
@@ -165,9 +164,9 @@ def test_a_pinned_direct_dependency_keeps_its_version() -> None:
     """The manifest said flask==2.0.0, so latest is the wrong answer."""
     seen: list[str] = []
 
-    def fetch(name: str, spec):
+    def fetch(name: str, spec) -> FetchResult:
         seen.append(str(spec))
-        return "2.0.0", []
+        return FetchResult("2.0.0", [])
 
     deps = [
         Dependency(key("flask", "2.0.0"), raw_spec="==2.0.0", is_direct=True, depth=0, parent=None)

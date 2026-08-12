@@ -60,3 +60,10 @@ def test_same_name_different_ecosystem_are_different_keys() -> None:
     a = PackageKey("requests", "1.0", EcoSystem.PYTHON)
     b = PackageKey("requests", "1.0", EcoSystem.NPM)
     assert a != b
+
+
+def test_ecosystem_values_are_spelled_the_way_osv_expects() -> None:
+    """Not cosmetic: OSV matches these exactly, and the wrong case silently
+    returns no vulnerabilities rather than an error."""
+    assert EcoSystem.PYTHON.value == "PyPI"
+    assert EcoSystem.NPM.value == "npm"
