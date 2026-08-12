@@ -112,7 +112,7 @@ def test_no_release_satisfies_the_constraint() -> None:
     )
     result = client.fetch("flask", SpecifierSet("<2.0"))
     assert not result.ok
-    assert result.error == "no release satisfies <2.0"
+    assert result.error == "no release satisfies <2.0 (latest is 3.0.0)"
     assert result.error != NOT_ON_PYPI
 
 
@@ -216,3 +216,85 @@ def test_platform_markers_are_kept() -> None:
     )
     result = client.fetch("thing", SpecifierSet())
     assert [r.name for r in result.requirements] == ["pywin32", "tomli"]
+
+
+# --- when the project last published anything ------------------------------
+
+
+def dated_page(version: str, uploads: dict[str, list[str]]) -> FakeResponse:
+    """A package page whose releases carry upload times."""
+    return FakeResponse(
+        {
+            "info": {"version": version, "requires_dist": []},
+            "releases": {
+                release: [{"upload_time_iso_8601": when} for when in times]
+                for release, times in uploads.items()
+            },
+        }
+    )
+
+
+def test_the_newest_upload_time_is_the_last_release() -> None:
+    """Not the resolved version's date: the question is when anyone last
+    published, which is what tells you a project is abandoned."""
+    client, _ = client_for(
+        {
+            "https://pypi.org/pypi/flask/json": dated_page(
+                "3.0.0",
+                {
+                    "1.0.0": ["2019-01-01T00:00:00.000000Z"],
+                    "3.0.0": ["2024-06-15T12:00:00.000000Z", "2024-06-15T12:05:00.000000Z"],
+                },
+            )
+        }
+    )
+
+    result = client.fetch("flask", SpecifierSet())
+
+    assert result.last_release is not None
+    assert result.last_release.year == 2024
+    assert result.last_release.month == 6
+
+
+def test_a_page_with_no_upload_times_has_no_date() -> None:
+    client, _ = client_for(
+        {"https://pypi.org/pypi/flask/json": package_page("3.0.0", [], ["3.0.0"])}
+    )
+    assert client.fetch("flask", SpecifierSet()).last_release is None
+
+
+def test_an_unreadable_date_is_skipped_rather_than_crashing() -> None:
+    client, _ = client_for(
+        {
+            "https://pypi.org/pypi/flask/json": dated_page(
+                "3.0.0", {"3.0.0": ["not a date", "2024-06-15T12:00:00.000000Z"]}
+            )
+        }
+    )
+    result = client.fetch("flask", SpecifierSet())
+    assert result.last_release is not None
+    assert result.last_release.year == 2024
+
+
+def test_a_release_with_no_files_is_skipped() -> None:
+    """Yanked releases can have an empty file list."""
+    client, _ = client_for({"https://pypi.org/pypi/flask/json": dated_page("3.0.0", {"3.0.0": []})})
+    assert client.fetch("flask", SpecifierSet()).last_release is None
+
+
+def test_an_impossible_pin_names_the_version_that_does_exist() -> None:
+    """The customer thinks the scanner is wrong; really they pinned a version
+    that was never published. Saying which one exists answers that directly."""
+    client, _ = client_for(
+        {"https://pypi.org/pypi/urllib3/json": package_page("2.7.0", [], ["2.6.0", "2.7.0"])}
+    )
+
+    result = client.fetch("urllib3", SpecifierSet("==3.0.0"))
+
+    assert result.error == "no release satisfies ==3.0.0 (latest is 2.7.0)"
+
+
+def test_a_missing_package_still_says_it_does_not_exist() -> None:
+    """A package that is not on PyPI has no latest version to name."""
+    client, _ = client_for({})
+    assert client.fetch("nope", SpecifierSet("==1.0")).error == NOT_ON_PYPI

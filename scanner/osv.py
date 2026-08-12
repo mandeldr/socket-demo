@@ -75,9 +75,24 @@ def _vulnerability(record: dict) -> Vulnerability:
         fixed_versions=_fixed_versions(record),
         source=Source.OSV,
         severity=_severity(record),
-        summary=record.get("summary", ""),
+        summary=_description(record),
         url=f"https://osv.dev/vulnerability/{record['id']}",
     )
+
+
+def _description(record: dict) -> str:
+    """One line saying what is wrong.
+
+    PyPA records often carry no `summary` at all, only the long `details`
+    markdown, and a finding with no description is not much use to a reader.
+    OSV also returns the odd summary with a stray space on the end.
+    """
+    summary = (record.get("summary") or "").strip()
+    if summary:
+        return summary
+
+    details = (record.get("details") or "").strip()
+    return details.split("\n\n")[0].strip()
 
 
 def _fixed_versions(record: dict) -> list[str]:

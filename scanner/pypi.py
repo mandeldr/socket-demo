@@ -4,6 +4,7 @@ Provides the `fetch` callable the resolver walks the dependency tree with.
 """
 
 import logging
+from datetime import datetime
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import SpecifierSet
@@ -35,18 +36,19 @@ class PyPIClient:
         if error or page is None:
             return FetchResult(error=error)
 
+        published = _last_release(page)
         latest = page["info"]["version"]
         if spec.contains(latest, prereleases=True):
-            return FetchResult(latest, _requirements(page))
+            return FetchResult(latest, _requirements(page), last_release=published)
 
         version = _best_match(page.get("releases", {}), spec)
         if version is None:
-            return FetchResult(error=f"no release satisfies {spec}")
+            return FetchResult(error=f"no release satisfies {spec} (latest is {latest})")
 
         pinned, error = self._get(f"{BASE_URL}/{name}/{version}/json")
         if error or pinned is None:
             return FetchResult(error=f"metadata for {version} unavailable ({error})")
-        return FetchResult(version, _requirements(pinned))
+        return FetchResult(version, _requirements(pinned), last_release=published)
 
     def _get(self, url: str) -> tuple[dict | None, str | None]:
         """Fetch and decode a URL. Returns (payload, error); exactly one is set."""
@@ -71,6 +73,32 @@ class PyPIClient:
             log.debug("%s: %s", url, result[1])
         self._cache[url] = result
         return result
+
+
+def _last_release(page: dict) -> datetime | None:
+    """When anything was last published for this project.
+
+    Deliberately the newest upload across every release rather than the date of
+    the version we resolved to: an old pin of a healthy project is a different
+    problem from a project nobody has touched in years.
+    """
+    newest = None
+    for files in (page.get("releases") or {}).values():
+        for entry in files or []:
+            when = _parse_time(entry.get("upload_time_iso_8601"))
+            if when and (newest is None or when > newest):
+                newest = when
+    return newest
+
+
+def _parse_time(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        # PyPI writes a trailing Z, which fromisoformat did not accept until 3.11.
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _requirements(page: dict) -> list[Requirement]:

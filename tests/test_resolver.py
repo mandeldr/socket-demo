@@ -4,6 +4,8 @@ The resolver takes a `fetch` callable so the graph logic can be tested without
 touching the network. `fake_index` below builds one from a plain dict.
 """
 
+from datetime import datetime, timezone
+
 from packaging.requirements import Requirement
 
 from scanner.enums import EcoSystem
@@ -209,3 +211,15 @@ def test_parent_is_the_shortest_route() -> None:
     )
     assert graph.nodes[key("d")].parent == key("a")
     assert graph.path_to(key("d")) == [key("a"), key("d")]
+
+
+def test_the_last_release_date_reaches_the_graph() -> None:
+    """The report needs it to spot packages nobody has touched in years."""
+    published = datetime(2019, 1, 1, tzinfo=timezone.utc)
+
+    def fetch(name: str, _spec) -> FetchResult:
+        return FetchResult("1.0", [], last_release=published)
+
+    graph = resolve(direct("abandoned"), fetch)
+
+    assert graph.nodes[key("abandoned", "1.0")].last_release == published

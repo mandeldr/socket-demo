@@ -14,6 +14,9 @@ from scanner.models import PackageKey, Vulnerability
 
 UNKNOWN_SEVERITY = "UNKNOWN"
 
+# Worst first, which is the order a report shows them in.
+SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", UNKNOWN_SEVERITY]
+
 # OSV says MODERATE where GitHub says medium. Left alone that is two buckets in
 # the summary for one level of seriousness.
 SEVERITY_WORDS = {

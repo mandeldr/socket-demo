@@ -4,6 +4,7 @@ An adjacency list: every node holds the keys of the packages it requires.
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from scanner.models import PackageKey
 
@@ -19,6 +20,9 @@ class GraphNode:
     # None for a direct dependency: it came from the manifest.
     parent: PackageKey | None = None
     failed: bool = False  # the lookup did not produce a version
+    # When the newest release was published, for spotting packages nobody has
+    # touched in years. None when the registry did not say.
+    last_release: datetime | None = None
 
 
 @dataclass
@@ -39,8 +43,11 @@ class DependencyGraph:
         depth: int,
         parent: PackageKey | None = None,
         failed: bool = False,
+        last_release: datetime | None = None,
     ) -> None:
-        self.nodes[key] = GraphNode(key, depth, parent=parent, failed=failed)
+        self.nodes[key] = GraphNode(
+            key, depth, parent=parent, failed=failed, last_release=last_release
+        )
 
     def add_edge(self, parent: PackageKey, child: PackageKey) -> None:
         node = self.nodes.get(parent)

@@ -205,3 +205,39 @@ def test_the_vulnerability_model_survives_a_sparse_record() -> None:
     assert vulnerability.severity == "UNKNOWN"
     assert vulnerability.fixed_versions == []
     assert vulnerability.aliases == set()
+
+
+# --- the description the report shows --------------------------------------
+
+
+def test_a_summary_with_stray_whitespace_is_cleaned() -> None:
+    """OSV really does return these; two django records have them."""
+    record = dict(RECORD, summary=" Django: GDALRaster may over-read heap memory ")
+    assert _vulnerability(record).summary == "Django: GDALRaster may over-read heap memory"
+
+
+def test_details_are_used_when_there_is_no_summary() -> None:
+    """PyPA records often carry only the long form, and a finding with no
+    description at all is not much use to a reader."""
+    record = {
+        "id": "PYSEC-1",
+        "details": "Pallets Click contains a command injection vulnerability.",
+    }
+    assert _vulnerability(record).summary == (
+        "Pallets Click contains a command injection vulnerability."
+    )
+
+
+def test_only_the_first_paragraph_of_details_is_used() -> None:
+    """Details are long markdown; the console wants one line."""
+    record = {"id": "PYSEC-1", "details": "The short version.\n\nThen paragraphs of markdown."}
+    assert _vulnerability(record).summary == "The short version."
+
+
+def test_a_summary_is_preferred_over_details() -> None:
+    record = {"id": "PYSEC-1", "summary": "short", "details": "much longer"}
+    assert _vulnerability(record).summary == "short"
+
+
+def test_a_record_with_neither_has_no_description() -> None:
+    assert _vulnerability({"id": "PYSEC-1"}).summary == ""

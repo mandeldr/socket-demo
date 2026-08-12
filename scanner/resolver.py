@@ -1,6 +1,7 @@
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import NamedTuple
 
 from packaging.requirements import Requirement
@@ -23,6 +24,9 @@ class FetchResult:
     version: str | None = None
     requirements: list[Requirement] = field(default_factory=list)
     error: str | None = None
+    # When the project last published anything, which is what tells you it has
+    # been abandoned. None when the registry did not say.
+    last_release: datetime | None = None
 
     @property
     def ok(self) -> bool:
@@ -83,7 +87,13 @@ def resolve(
         if key in graph.nodes:
             continue
 
-        graph.add_node(key, depth, parent=parent, failed=not metadata.ok)
+        graph.add_node(
+            key,
+            depth,
+            parent=parent,
+            failed=not metadata.ok,
+            last_release=metadata.last_release,
+        )
         if not metadata.ok:
             graph.errors.append(ResolutionError(name, metadata.error or "unknown error"))
             continue
