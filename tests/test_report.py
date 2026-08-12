@@ -1,62 +1,26 @@
-"""Tests for the report.
+"""Tests for the report dictionary.
 
-The report is built once as a dictionary and the console text is rendered from
-it, so every test here checks both: if something is worth printing it has to be
-in the JSON too.
+This is what --format json prints, and what the console is rendered from,
+so anything worth showing a user has to be in here.
 """
 
 import json
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import timedelta
 
 import pytest
 
-from scanner.enums import EcoSystem, SkipReason, Source
+from scanner.enums import EcoSystem
 from scanner.graph import DependencyGraph, ResolutionError
-from scanner.models import PackageKey, SkippedLine, Vulnerability
-from scanner.report import build, render
-
-NOW = datetime(2026, 8, 11, tzinfo=timezone.utc)
-
-
-def key(name: str, version: str = "1.0") -> PackageKey:
-    return PackageKey(name, version, EcoSystem.PYTHON)
-
-
-def vulnerability(
-    identifier: str = "GHSA-x",
-    cve: str = "CVE-2025-1",
-    severity: str = "HIGH",
-    fixes: list[str] | None = None,
-    summary: str = "something is wrong",
-) -> Vulnerability:
-    return Vulnerability(
-        id=identifier,
-        aliases={cve},
-        fixed_versions=fixes if fixes is not None else ["2.0.0"],
-        source=Source.OSV,
-        severity=severity,
-        summary=summary,
-        url=f"https://osv.dev/vulnerability/{identifier}",
-    )
-
-
-def graph_with(*names: str, last_release: dict | None = None) -> DependencyGraph:
-    """A flat graph of direct packages, optionally with release dates."""
-    graph = DependencyGraph()
-    for name in names:
-        graph.add_node(key(name), depth=0, last_release=(last_release or {}).get(name))
-    return graph
-
-
-def report_for(graph, findings, **kwargs) -> dict:
-    defaults = {
-        "manifest": Path("requirements.txt"),
-        "source_errors": {"osv": None, "github": None},
-        "generated_at": NOW,
-    }
-    return build(graph=graph, findings=findings, **{**defaults, **kwargs})
-
+from scanner.models import PackageKey
+from tests.helpers import (
+    NOW,
+    graph_with,
+    key,
+    mixed_findings,
+    report_for,
+    skipped_lines,
+    vulnerability,
+)
 
 # --- the summary the rubric asks for --------------------------------------
 
@@ -142,21 +106,6 @@ def test_what_was_ignored_is_recorded_so_the_report_stays_honest() -> None:
     assert report["ignored"]["rules"] == ["CVE-2025-1"]
 
 
-def test_the_console_says_when_findings_were_ignored() -> None:
-    graph = graph_with("flask")
-    findings = {key("flask"): [vulnerability("GHSA-x", "CVE-2025-1")]}
-
-    text = render(report_for(graph, findings, ignore=["CVE-2025-1"]))
-
-    assert "1 ignored" in text
-
-
-def test_ignoring_nothing_says_nothing() -> None:
-    graph = graph_with("flask")
-    text = render(report_for(graph, {key("flask"): [vulnerability()]}))
-    assert "ignored" not in text
-
-
 # --- unmaintained packages ------------------------------------------------
 
 
@@ -196,15 +145,6 @@ def test_unmaintained_packages_are_listed_worst_first() -> None:
     report = report_for(graph, {}, stale_after_days=365)
 
     assert [p["package"] for p in report["unmaintained"]] == ["older", "old"]
-
-
-def test_the_console_lists_unmaintained_packages() -> None:
-    graph = graph_with("abandoned", last_release={"abandoned": NOW - timedelta(days=900)})
-
-    text = render(report_for(graph, {}, stale_after_days=365))
-
-    assert "abandoned" in text
-    assert "900 days" in text
 
 
 def test_staleness_is_off_unless_asked_for() -> None:
@@ -282,28 +222,6 @@ def test_one_dependent_reads_as_singular_and_two_as_plural() -> None:
     report = report_for(graph, {key("urllib3"): [vulnerability()]})
 
     assert "which require urllib3" in report["findings"][0]["remediation"]
-
-
-def test_a_vulnerability_with_no_fix_says_so() -> None:
-    graph = graph_with("flask")
-    text = render(report_for(graph, {key("flask"): [vulnerability(fixes=[])]}))
-    assert "no fix published" in text
-
-
-def test_a_clean_scan_says_so_in_one_line() -> None:
-    text = render(report_for(graph_with("flask", "click"), {}))
-    assert "no known vulnerabilities" in text
-    assert "2 packages" in text
-
-
-def test_a_failed_source_is_named_in_both_formats() -> None:
-    graph = graph_with("flask")
-    report = report_for(
-        graph, {}, source_errors={"osv": None, "github": "GitHub rate limit reached"}
-    )
-
-    assert report["sources"]["failed"] == {"github": "GitHub rate limit reached"}
-    assert "GitHub rate limit reached" in render(report)
 
 
 def test_packages_are_ordered_by_their_worst_vulnerability() -> None:
@@ -422,26 +340,7 @@ def test_a_package_with_no_version_has_no_target() -> None:
     assert report_for(graph, findings)["findings"][0]["upgrade_to"] is None
 
 
-def test_the_console_names_the_version_to_upgrade_to() -> None:
-    graph = graph_with("flask")
-    text = render(report_for(graph, {key("flask", "1.0"): [vulnerability(fixes=["3.1.3"])]}))
-    assert "to at least 3.1.3" in text
-
-
-def test_the_console_says_when_nothing_clears_it() -> None:
-    graph = graph_with("flask")
-    text = render(report_for(graph, {key("flask", "1.0"): [vulnerability(fixes=[])]}))
-    assert "no version clears every finding" in text
-
-
 # --- what the scan did not look at ----------------------------------------
-
-
-def skipped_lines() -> list[SkippedLine]:
-    return [
-        SkippedLine(4, "-e .", SkipReason.EDITABLE),
-        SkippedLine(9, "--index-url https://example.com", SkipReason.PIP_OPTION),
-    ]
 
 
 def test_skipped_lines_are_recorded_so_the_scan_is_honest() -> None:
@@ -470,48 +369,7 @@ def test_nothing_skipped_is_an_empty_list_not_a_missing_key() -> None:
     assert report["summary"]["skipped"] == 0
 
 
-def test_the_console_says_how_many_lines_were_skipped() -> None:
-    text = render(report_for(graph_with("flask"), {}, skipped=skipped_lines()))
-    assert "2 lines skipped" in text
-
-
-def test_the_console_does_not_list_every_skipped_line_by_default() -> None:
-    """Twelve lines of skip detail would drown the report."""
-    text = render(report_for(graph_with("flask"), {}, skipped=skipped_lines()))
-    assert "--index-url" not in text
-
-
-def test_the_skipped_lines_can_be_shown_on_request() -> None:
-    report = report_for(graph_with("flask"), {}, skipped=skipped_lines())
-    text = render(report, show_skipped=True)
-    assert "line 4: -e ." in text
-    assert "editable install" in text
-
-
 # --- the header, where every count has to reconcile ------------------------
-
-
-def test_the_header_reconciles_the_manifest_against_what_resolved() -> None:
-    """16 requirements, 12 skipped, 11 resolved and 4 failed have to add up
-    for a reader without doing arithmetic across two output streams."""
-    graph = DependencyGraph()
-    graph.add_node(key("flask"), depth=0)
-    graph.add_node(key("click"), depth=1, parent=key("flask"))
-    graph.errors.append(ResolutionError("ghost", "no such package on PyPI"))
-
-    text = render(report_for(graph, {}, requirements=3, skipped=skipped_lines()))
-
-    assert "3 requirements, 2 lines skipped" in text
-    assert "2 packages resolved (1 direct, 1 transitive), 1 unresolved" in text
-
-
-def test_the_header_leaves_out_clauses_that_are_zero() -> None:
-    graph = graph_with("flask")
-    text = render(report_for(graph, {}, requirements=1))
-
-    assert "1 requirements" in text
-    assert "skipped" not in text
-    assert "unresolved" not in text
 
 
 def test_the_requirement_count_is_in_the_summary() -> None:
@@ -525,21 +383,7 @@ def test_the_unresolved_count_is_in_the_summary() -> None:
     assert report_for(graph, {})["summary"]["unresolved"] == 1
 
 
-def test_the_manifest_path_appears_once() -> None:
-    text = render(report_for(graph_with("flask"), {}, requirements=1))
-    assert text.count("requirements.txt") == 1
-
-
 # --- showing only what matters --------------------------------------------
-
-
-def mixed_findings() -> dict:
-    return {
-        key("critical-pkg"): [vulnerability("A", "CVE-1", severity="CRITICAL")],
-        key("high-pkg"): [vulnerability("B", "CVE-2", severity="HIGH")],
-        key("medium-pkg"): [vulnerability("C", "CVE-3", severity="MEDIUM")],
-        key("low-pkg"): [vulnerability("D", "CVE-4", severity="LOW")],
-    }
 
 
 def test_findings_below_the_threshold_are_not_listed() -> None:
@@ -592,19 +436,6 @@ def test_a_package_whose_findings_are_all_hidden_drops_out() -> None:
     assert report_for(graph, findings, min_severity="HIGH")["findings"] == []
 
 
-def test_the_console_says_what_is_hidden() -> None:
-    graph = graph_with("critical-pkg", "high-pkg", "medium-pkg", "low-pkg")
-    text = render(report_for(graph, mixed_findings(), min_severity="HIGH"))
-    assert "showing HIGH and above" in text
-    assert "2 hidden" in text
-
-
-def test_the_console_says_nothing_when_no_threshold_is_set() -> None:
-    graph = graph_with("high-pkg")
-    findings = {key("high-pkg"): [vulnerability("B", "CVE-2", severity="HIGH")]}
-    assert "hidden" not in render(report_for(graph, findings))
-
-
 def test_the_upgrade_target_ignores_the_display_filter() -> None:
     """--min-severity decides what is shown, not what a user has to fix.
     Recommending a version that only clears the visible findings would leave
@@ -639,3 +470,10 @@ def test_an_ignored_finding_does_not_affect_the_upgrade_target() -> None:
     report = report_for(graph, findings, ignore=["CVE-2"])
 
     assert report["findings"][0]["upgrade_to"] == "5.1.14"
+
+
+def test_the_unique_count_is_in_the_summary() -> None:
+    graph = DependencyGraph()
+    graph.roots.extend([key("flask"), key("click")])
+    report = report_for(graph, {}, requirements=5)
+    assert report["summary"]["packages_requested"] == 2

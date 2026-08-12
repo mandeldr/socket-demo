@@ -1,8 +1,8 @@
-"""Turning a finished scan into something to read.
+"""Turning a finished scan into plain data.
 
-The report is built once as a dictionary and the console text is rendered from
-that same dictionary. Two formatters written separately drift apart; this way
-the console can only show what the JSON also carries, so they cannot disagree.
+Everything worth saying about a scan ends up in one dictionary: it is what
+`--format json` prints, and what console.py renders the human version from.
+Building it once means the two cannot disagree.
 """
 
 from datetime import datetime, timezone
@@ -11,7 +11,7 @@ from pathlib import Path
 from packaging.version import InvalidVersion, Version
 
 from scanner.graph import DependencyGraph, GraphNode
-from scanner.models import PackageKey, SkippedLine, Vulnerability
+from scanner.models import PackageKey, ParseResult, Vulnerability
 from scanner.sources import SEVERITY_ORDER, UNKNOWN_SEVERITY, cve_of
 
 
@@ -20,8 +20,7 @@ def build(
     graph: DependencyGraph,
     findings: dict[PackageKey, list[Vulnerability]],
     source_errors: dict[str, str | None],
-    requirements: int = 0,
-    skipped: list[SkippedLine] | None = None,
+    parsed: ParseResult | None = None,
     generated_at: datetime | None = None,
     ignore: list[str] | None = None,
     stale_after_days: int | None = None,
@@ -31,15 +30,21 @@ def build(
     now = generated_at or datetime.now(timezone.utc)
     resolved = [node for node in graph.nodes.values() if not node.failed]
 
+    parsed = parsed or ParseResult()
     kept, ignored_count = _apply_ignore_list(findings, ignore or [])
     shown, hidden_count = _apply_severity_filter(kept, min_severity)
-    skipped = skipped or []
 
     return {
         "manifest": str(manifest),
         "generated_at": now.isoformat(),
         "summary": _summary(
-            resolved, kept, skipped, requirements, len(graph.errors), hidden_count, min_severity
+            resolved,
+            kept,
+            parsed,
+            len(graph.roots),
+            len(graph.errors),
+            hidden_count,
+            min_severity,
         ),
         "findings": [
             # `kept` rather than `shown`: the severity filter decides what is
@@ -53,7 +58,7 @@ def build(
         # believing the whole manifest was covered.
         "skipped": [
             {"line": line.line_number, "content": line.content, "reason": line.reason.value}
-            for line in skipped
+            for line in parsed.skipped
         ],
         "unmaintained": _unmaintained(resolved, now, stale_after_days),
         "unresolved": [{"package": e.package, "reason": e.error} for e in graph.errors],
@@ -126,8 +131,8 @@ def _matches(vulnerability: Vulnerability, rules: set[str]) -> bool:
 def _summary(
     resolved: list[GraphNode],
     findings: dict,
-    skipped: list,
-    requirements: int,
+    parsed: ParseResult,
+    requested: int,
     unresolved: int,
     hidden: int,
     min_severity: str | None,
@@ -143,8 +148,9 @@ def _summary(
             severities[vulnerability.severity] = severities.get(vulnerability.severity, 0) + 1
 
     return {
-        "requirements": requirements,
-        "skipped": len(skipped),
+        "requirements": len(parsed.dependencies),
+        "packages_requested": requested,
+        "skipped": len(parsed.skipped),
         "unresolved": unresolved,
         "total_packages": len(resolved),
         "direct": len([n for n in resolved if n.depth == 0]),
@@ -293,106 +299,3 @@ def _worst_first(findings: dict[PackageKey, list[Vulnerability]]) -> list[tuple]
         findings.items(),
         key=lambda item: (min(_severity_rank(v) for v in item[1]), item[0].name),
     )
-
-
-def render(report: dict, show_skipped: bool = False) -> str:
-    """The console version, built from the same data the JSON carries."""
-    summary = report["summary"]
-    lines = [report["manifest"], *_header(summary), ""]
-
-    if report["findings"]:
-        counts = "  ".join(f"{level} {n}" for level, n in summary["by_severity"].items())
-        lines.append(
-            f"{summary['vulnerable_packages']} vulnerable "
-            f"({summary['vulnerable_percent']}% of packages), "
-            f"{summary['total_vulnerabilities']} findings{_ignored_note(report)}"
-        )
-        lines.append(f"  {counts}")
-        if summary["min_severity"]:
-            lines.append(
-                f"  showing {summary['min_severity']} and above; "
-                f"{summary['hidden_by_severity']} hidden"
-            )
-        for finding in report["findings"]:
-            lines += _render_finding(finding)
-    else:
-        lines.append(f"no known vulnerabilities{_ignored_note(report)}")
-
-    if report["skipped"] and show_skipped:
-        lines.append("")
-        lines.append("skipped:")
-        lines += [
-            f"  line {item['line']}: {item['content']}  ({item['reason']})"
-            for item in report["skipped"]
-        ]
-
-    if report["unmaintained"]:
-        lines.append("")
-        lines.append(f"unmaintained {len(report['unmaintained'])}:")
-        lines += [
-            f"  {item['package']}: no release in {item['days_since_release']} days"
-            for item in report["unmaintained"]
-        ]
-
-    if report["unresolved"]:
-        lines.append("")
-        lines.append(f"could not resolve {len(report['unresolved'])}:")
-        lines += [f"  {item['package']}: {item['reason']}" for item in report["unresolved"]]
-
-    for name, why in report["sources"]["failed"].items():
-        lines.append("")
-        lines.append(f"{name} did not finish: {why}")
-
-    return "\n".join(lines)
-
-
-def _header(summary: dict) -> list[str]:
-    """What the manifest asked for, and what came back.
-
-    Clauses that would read as zero are left out rather than printed, so the
-    line stays about what actually happened.
-    """
-    manifest = f"{summary['requirements']} requirements"
-    if summary["skipped"]:
-        manifest += f", {summary['skipped']} lines skipped"
-
-    resolved = (
-        f"{summary['total_packages']} packages resolved "
-        f"({summary['direct']} direct, {summary['transitive']} transitive)"
-    )
-    if summary["unresolved"]:
-        resolved += f", {summary['unresolved']} unresolved"
-
-    return [manifest, resolved]
-
-
-def _ignored_note(report: dict) -> str:
-    """Say when findings were suppressed, so a clean report can be trusted."""
-    count = report["ignored"]["count"]
-    return f" ({count} ignored)" if count else ""
-
-
-def _upgrade_note(finding: dict) -> str:
-    """What to upgrade to, or that nothing available fixes everything."""
-    if finding["upgrade_to"]:
-        return f", to at least {finding['upgrade_to']}"
-    return " (no version clears every finding)"
-
-
-def _render_finding(finding: dict) -> list[str]:
-    how = "direct" if finding["direct"] else "via " + " -> ".join(finding["path"][:-1])
-    lines = [
-        "",
-        f"{finding['package']} {finding['version']}  ({how})",
-        f"  {finding['remediation']}{_upgrade_note(finding)}",
-    ]
-    for vulnerability in finding["vulnerabilities"]:
-        fixed = ", ".join(vulnerability["fixed_versions"]) or "no fix published"
-        lines.append(
-            f"  [{vulnerability['severity']:8}] {vulnerability['cve'] or vulnerability['id']}"
-            f"  fixed in {fixed}"
-        )
-        if vulnerability["summary"]:
-            lines.append(f"{'':13}{vulnerability['summary']}")
-        lines.append(f"{'':13}{vulnerability['url']}")
-    return lines

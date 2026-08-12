@@ -10,11 +10,12 @@ import json
 import sys
 from pathlib import Path
 
+from scanner.console import render
 from scanner.github import GHSAClient
 from scanner.osv import OSVClient
 from scanner.parsers import parse_requirements_txt
 from scanner.pypi import PyPIClient
-from scanner.report import build, render
+from scanner.report import build
 from scanner.resolver import DEFAULT_MAX_DEPTH, resolve
 from scanner.sources import merge
 
@@ -132,8 +133,7 @@ def main(argv: list[str] | None = None) -> int:
         graph=graph,
         findings=merge([osv, github]),
         source_errors={"osv": osv.error, "github": github.error},
-        requirements=len(parsed.dependencies),
-        skipped=parsed.skipped,
+        parsed=parsed,
         ignore=args.ignore,
         stale_after_days=args.stale_after,
         min_severity=args.min_severity,
