@@ -10,8 +10,8 @@ about the few findings OSV could not fully describe - roughly one in thirty -
 and asked by CVE, which returns exactly the advisory wanted.
 """
 
-import logging
 import os
+from collections.abc import Iterator
 
 from packaging.utils import canonicalize_name
 
@@ -26,8 +26,6 @@ from scanner.sources import (
 )
 
 ADVISORIES_URL = "https://api.github.com/advisories"
-
-log = logging.getLogger(__name__)
 
 
 class GHSAClient:
@@ -50,7 +48,7 @@ class GHSAClient:
         # a request budget to spend.
         self._cache: dict[str, dict | None] = {}
 
-    def enrich(self, findings: dict[PackageKey, list[Vulnerability]]) -> QueryResult:
+    def fill_gaps(self, findings: dict[PackageKey, list[Vulnerability]]) -> QueryResult:
         """Look up whatever OSV could not fully describe.
 
         Returns only the records it filled in. Merging those back over the
@@ -59,21 +57,12 @@ class GHSAClient:
         """
         filled: dict[PackageKey, list[Vulnerability]] = {}
 
-        for package, vulnerabilities in findings.items():
-            for vulnerability in vulnerabilities:
-                if _is_complete(vulnerability):
-                    continue
-
-                cve = cve_of(vulnerability)
-                if cve is None:
-                    # Without a CVE there is nothing to look the advisory up by.
-                    continue
-
-                advisory, error = self._advisory(cve)
-                if error:
-                    return QueryResult(filled, error=error)
-                if advisory:
-                    filled.setdefault(package, []).append(_vulnerability(advisory, package.name))
+        for package, cve in _gaps(findings):
+            advisory, error = self._advisory(cve)
+            if error:
+                return QueryResult(filled, error=error)
+            if advisory:
+                filled.setdefault(package, []).append(_vulnerability(advisory, package.name))
 
         return QueryResult(filled)
 
@@ -104,6 +93,20 @@ class GHSAClient:
             return None, "GitHub returned invalid JSON"
         except OSError as exc:
             return None, f"could not reach GitHub ({type(exc).__name__})"
+
+
+def _gaps(findings: dict[PackageKey, list[Vulnerability]]) -> Iterator[tuple[PackageKey, str]]:
+    """The findings worth asking GitHub about, as (package, cve) pairs.
+
+    Worth asking means two things: OSV left something out, and there is a CVE
+    to look the advisory up by. A finding with neither problem is skipped, and
+    a finding with no CVE cannot be looked up at all.
+    """
+    for package, vulnerabilities in findings.items():
+        for vulnerability in vulnerabilities:
+            cve = cve_of(vulnerability)
+            if cve and not _is_complete(vulnerability):
+                yield package, cve
 
 
 def _is_complete(vulnerability: Vulnerability) -> bool:
@@ -148,11 +151,6 @@ def _patched_version(advisory: dict, package_name: str) -> str | None:
     """
     for entry in advisory.get("vulnerabilities") or []:
         name = canonicalize_name((entry.get("package") or {}).get("name") or "")
-        if name != package_name:
-            continue
-        # REST answers with a bare string; GraphQL uses an object. Accept both.
-        value = entry.get("first_patched_version")
-        if isinstance(value, dict):
-            value = value.get("identifier")
-        return value or None
+        if name == package_name:
+            return entry.get("first_patched_version") or None
     return None

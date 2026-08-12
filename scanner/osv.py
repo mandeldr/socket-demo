@@ -9,16 +9,12 @@ OSV aggregates several databases, so the same CVE usually comes back twice.
 `dedupe` collapses them.
 """
 
-import logging
-
 from scanner.enums import Source
 from scanner.http import DEFAULT_TIMEOUT, make_session
 from scanner.models import PackageKey, Vulnerability
 from scanner.sources import UNKNOWN_SEVERITY, QueryResult, dedupe, normalize_severity
 
 QUERY_URL = "https://api.osv.dev/v1/query"
-
-log = logging.getLogger(__name__)
 
 
 class OSVClient:

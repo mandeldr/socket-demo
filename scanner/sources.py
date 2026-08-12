@@ -24,9 +24,6 @@ SEVERITY_WORDS = {
     "LOW": "LOW",
 }
 
-# Worst first, which is the order a report should show them in.
-SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", UNKNOWN_SEVERITY]
-
 
 @dataclass
 class QueryResult:

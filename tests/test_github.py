@@ -75,7 +75,7 @@ def test_a_finding_with_a_severity_and_a_fix_is_left_alone() -> None:
     client, session = client_for()
 
     complete = gap(severity="HIGH", fixed_versions=["2.5.0"])
-    result = client.enrich({key("urllib3"): [complete]})
+    result = client.fill_gaps({key("urllib3"): [complete]})
 
     assert session.calls == []
     assert result.findings == {}
@@ -84,7 +84,7 @@ def test_a_finding_with_a_severity_and_a_fix_is_left_alone() -> None:
 def test_a_finding_missing_its_severity_is_looked_up() -> None:
     client, session = client_for()
 
-    client.enrich({key("urllib3"): [gap(fixed_versions=["2.5.0"])]})
+    client.fill_gaps({key("urllib3"): [gap(fixed_versions=["2.5.0"])]})
 
     assert len(session.calls) == 1
     assert session.calls[0]["params"] == {"cve_id": "CVE-2025-50181"}
@@ -93,7 +93,7 @@ def test_a_finding_missing_its_severity_is_looked_up() -> None:
 def test_a_finding_missing_its_fix_is_looked_up() -> None:
     client, session = client_for()
 
-    client.enrich({key("urllib3"): [gap(severity="HIGH")]})
+    client.fill_gaps({key("urllib3"): [gap(severity="HIGH")]})
 
     assert len(session.calls) == 1
 
@@ -102,7 +102,7 @@ def test_a_finding_with_no_cve_cannot_be_looked_up() -> None:
     """There is nothing to key the request on."""
     client, session = client_for()
 
-    result = client.enrich({key("urllib3"): [gap(aliases=set())]})
+    result = client.fill_gaps({key("urllib3"): [gap(aliases=set())]})
 
     assert session.calls == []
     assert result.findings == {}
@@ -111,7 +111,7 @@ def test_a_finding_with_no_cve_cannot_be_looked_up() -> None:
 def test_an_unknown_cve_returns_nothing_without_failing() -> None:
     client, _ = client_for(payload=[])
 
-    result = client.enrich({key("urllib3"): [gap()]})
+    result = client.fill_gaps({key("urllib3"): [gap()]})
 
     assert result.ok
     assert result.findings == {}
@@ -136,7 +136,7 @@ def test_completeness_needs_both_a_severity_and_a_fix(severity, fixes, complete)
 def test_a_real_advisory_becomes_a_vulnerability() -> None:
     client, _ = client_for()
 
-    result = client.enrich({key("urllib3"): [gap()]})
+    result = client.fill_gaps({key("urllib3"): [gap()]})
 
     (vulnerability,) = result.findings[key("urllib3")]
     assert vulnerability.id == "GHSA-pq67-6m6q-mj2v"
@@ -168,16 +168,6 @@ def test_an_advisory_with_no_published_fix() -> None:
     assert _patched_version(advisory, "urllib3") is None
 
 
-def test_the_graphql_shape_of_a_patched_version_is_also_accepted() -> None:
-    """REST answers with a string; GraphQL wraps it in an object."""
-    advisory = {
-        "vulnerabilities": [
-            {"package": {"name": "urllib3"}, "first_patched_version": {"identifier": "2.5.0"}}
-        ]
-    }
-    assert _patched_version(advisory, "urllib3") == "2.5.0"
-
-
 def test_a_sparse_advisory_does_not_crash() -> None:
     vulnerability = _vulnerability({"ghsa_id": "GHSA-bare"}, "urllib3")
     assert vulnerability.severity == "UNKNOWN"
@@ -189,21 +179,21 @@ def test_a_sparse_advisory_does_not_crash() -> None:
 
 def test_a_token_is_sent_when_there_is_one() -> None:
     client, session = client_for()
-    client.enrich({key("urllib3"): [gap()]})
+    client.fill_gaps({key("urllib3"): [gap()]})
     assert session.calls[0]["headers"]["Authorization"] == "Bearer test-token"
 
 
 def test_a_token_is_read_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "from-env")
     session = FakeSession()
-    GHSAClient(session=session).enrich({key("urllib3"): [gap()]})
+    GHSAClient(session=session).fill_gaps({key("urllib3"): [gap()]})
     assert session.calls[0]["headers"]["Authorization"] == "Bearer from-env"
 
 
 def test_no_token_means_no_authorization_header(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     session = FakeSession()
-    GHSAClient(session=session).enrich({key("urllib3"): [gap()]})
+    GHSAClient(session=session).fill_gaps({key("urllib3"): [gap()]})
     assert "Authorization" not in session.calls[0]["headers"]
 
 
@@ -211,7 +201,7 @@ def test_being_rate_limited_says_how_to_fix_it(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     session = FakeSession(payload=[], status_code=403, headers={"X-RateLimit-Remaining": "0"})
 
-    result = GHSAClient(session=session).enrich({key("urllib3"): [gap()]})
+    result = GHSAClient(session=session).fill_gaps({key("urllib3"): [gap()]})
 
     assert not result.ok
     assert "GITHUB_TOKEN" in (result.error or "")
@@ -219,13 +209,13 @@ def test_being_rate_limited_says_how_to_fix_it(monkeypatch: pytest.MonkeyPatch) 
 
 def test_a_rate_limited_token_says_so_differently() -> None:
     client, _ = client_for(payload=[], status_code=403, headers={"X-RateLimit-Remaining": "0"})
-    result = client.enrich({key("urllib3"): [gap()]})
+    result = client.fill_gaps({key("urllib3"): [gap()]})
     assert result.error == "GitHub rate limit reached (5000/hour)"
 
 
 def test_a_plain_403_is_not_reported_as_a_rate_limit() -> None:
     client, _ = client_for(payload=[], status_code=403)
-    result = client.enrich({key("urllib3"): [gap()]})
+    result = client.fill_gaps({key("urllib3"): [gap()]})
     assert result.error == "GitHub returned HTTP 403"
 
 
@@ -234,7 +224,7 @@ def test_an_unreachable_source_reports_why_instead_of_raising() -> None:
         def get(self, *args, **kwargs):
             raise OSError("connection reset")
 
-    result = GHSAClient(session=ExplodingSession()).enrich({key("urllib3"): [gap()]})
+    result = GHSAClient(session=ExplodingSession()).fill_gaps({key("urllib3"): [gap()]})
 
     assert "could not reach GitHub" in (result.error or "")
 
@@ -250,7 +240,7 @@ def test_what_was_filled_in_before_a_failure_is_kept() -> None:
                 return FakeResponse([ADVISORY])
             return FakeResponse([], status_code=503)
 
-    result = GHSAClient(session=FailsOnSecond(), token="t").enrich(
+    result = GHSAClient(session=FailsOnSecond(), token="t").fill_gaps(
         {key("urllib3"): [gap()], key("flask"): [gap("CVE-2020-1")]}
     )
 
@@ -263,7 +253,7 @@ def test_a_cve_is_only_looked_up_once() -> None:
     versions. GitHub is the rate limited source, so repeats cost the most here."""
     client, session = client_for()
 
-    client.enrich(
+    client.fill_gaps(
         {
             key("urllib3", "1.26.20"): [gap()],
             key("urllib3", "2.2.1"): [gap()],
@@ -278,7 +268,7 @@ def test_a_cve_with_no_advisory_is_not_asked_about_again() -> None:
     """A miss is an answer worth remembering too."""
     client, session = client_for(payload=[])
 
-    client.enrich({key("a"): [gap()], key("b"): [gap()]})
+    client.fill_gaps({key("a"): [gap()], key("b"): [gap()]})
 
     assert len(session.calls) == 1
 
@@ -288,6 +278,6 @@ def test_a_failed_lookup_is_not_cached() -> None:
     session = FakeSession(payload=[], status_code=503)
     client = GHSAClient(session=session, token="t")
 
-    client.enrich({key("a"): [gap()]})
+    client.fill_gaps({key("a"): [gap()]})
 
     assert client._cache == {}
