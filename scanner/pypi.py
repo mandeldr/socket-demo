@@ -3,7 +3,6 @@
 Provides the `fetch` callable the resolver walks the dependency tree with.
 """
 
-import logging
 from datetime import datetime
 
 from packaging.requirements import InvalidRequirement, Requirement
@@ -16,8 +15,6 @@ from scanner.resolver import FetchResult
 
 BASE_URL = "https://pypi.org/pypi"
 NOT_ON_PYPI = "no such package on PyPI"
-
-log = logging.getLogger(__name__)
 
 
 class PyPIClient:
@@ -69,8 +66,6 @@ class PyPIClient:
         except OSError as exc:
             result = (None, f"could not reach PyPI ({type(exc).__name__})")
 
-        if result[1]:
-            log.debug("%s: %s", url, result[1])
         self._cache[url] = result
         return result
 
@@ -117,7 +112,6 @@ def _requirements(page: dict) -> list[Requirement]:
         try:
             requirement = Requirement(entry)
         except InvalidRequirement:
-            log.debug("skipping unparseable requirement %r", entry)
             continue
 
         if requirement.marker and "extra" in str(requirement.marker):
