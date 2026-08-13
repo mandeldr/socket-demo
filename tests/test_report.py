@@ -477,20 +477,3 @@ def test_the_unique_count_is_in_the_summary() -> None:
     graph.roots.extend([key("flask"), key("click")])
     report = report_for(graph, {}, requirements=5)
     assert report["summary"]["packages_requested"] == 2
-
-
-def test_truncated_packages_are_named_in_the_report() -> None:
-    """A subtree the depth limit cut off is not the same as a clean one."""
-    graph = DependencyGraph()
-    graph.add_node(key("deep-thing"), depth=5, truncated=True)
-    graph.add_node(key("flask"), depth=0)
-
-    report = report_for(graph, {})
-
-    assert report["truncated"] == ["deep-thing"]
-    assert report["summary"]["truncated"] == 1
-
-
-def test_nothing_truncated_is_an_empty_list() -> None:
-    assert report_for(graph_with("flask"), {})["truncated"] == []
-    assert report_for(graph_with("flask"), {})["summary"]["truncated"] == 0

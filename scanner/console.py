@@ -34,11 +34,6 @@ def render(report: dict, show_skipped: bool = False, width: int | None = None) -
         console, f"unmaintained {len(report['unmaintained'])}:", _unmaintained_lines(report)
     )
     _print_section(
-        console,
-        f"not followed past the depth limit {len(report['truncated'])}:",
-        report["truncated"],
-    )
-    _print_section(
         console, f"could not resolve {len(report['unresolved'])}:", _unresolved_lines(report)
     )
 

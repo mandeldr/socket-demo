@@ -36,8 +36,6 @@ class FetchResult:
 # Given a package name and the constraint on it, look up the version to use.
 Fetch = Callable[[str, SpecifierSet], FetchResult]
 
-DEFAULT_MAX_DEPTH = 5
-
 
 class _Lookup(NamedTuple):
     """A package waiting to be looked up, and how we got to it.
@@ -52,15 +50,15 @@ class _Lookup(NamedTuple):
     parent: PackageKey | None
 
 
-def resolve(
-    direct: list[Dependency],
-    fetch: Fetch,
-    max_depth: int = DEFAULT_MAX_DEPTH,
-) -> DependencyGraph:
+def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
     """Walk the dependency tree breadth-first and build the graph.
 
     Breadth-first so `depth` is the shortest path to each package, which is the
     most useful answer to "why is this here".
+
+    There is no depth limit. The walk is bounded by the graph itself - a
+    package already in it is never expanded again - so a limit would only mean
+    looking at less of a tree that pip installs all of.
     """
     graph = DependencyGraph()
     queue = deque(
@@ -87,23 +85,18 @@ def resolve(
         if key in graph.nodes:
             continue
 
-        # Anything with requirements we are about to not follow is recorded as
-        # truncated, so the report can say the tree was cut rather than let a
-        # subtree we never examined pass for clean.
         graph.add_node(
             key,
             depth,
             parent=parent,
             failed=not metadata.ok,
             last_release=metadata.last_release,
-            truncated=bool(metadata.requirements) and depth >= max_depth,
         )
         if not metadata.ok:
             graph.errors.append(ResolutionError(name, metadata.error or "unknown error"))
             continue
 
-        if depth < max_depth:
-            for requirement in metadata.requirements:
-                queue.append(_Lookup(requirement.name, requirement.specifier, depth + 1, key))
+        for requirement in metadata.requirements:
+            queue.append(_Lookup(requirement.name, requirement.specifier, depth + 1, key))
 
     return graph

@@ -20,10 +20,6 @@ class GraphNode:
     # None for a direct dependency: it came from the manifest.
     parent: PackageKey | None = None
     failed: bool = False  # the lookup did not produce a version
-    # True when this package has requirements we chose not to follow because
-    # of the depth limit. Without it a subtree we never looked at is
-    # indistinguishable from a package that genuinely has no dependencies.
-    truncated: bool = False
     # When the newest release was published, for spotting packages nobody has
     # touched in years. None when the registry did not say.
     last_release: datetime | None = None
@@ -48,15 +44,9 @@ class DependencyGraph:
         parent: PackageKey | None = None,
         failed: bool = False,
         last_release: datetime | None = None,
-        truncated: bool = False,
     ) -> None:
         self.nodes[key] = GraphNode(
-            key,
-            depth,
-            parent=parent,
-            failed=failed,
-            last_release=last_release,
-            truncated=truncated,
+            key, depth, parent=parent, failed=failed, last_release=last_release
         )
 
     def add_edge(self, parent: PackageKey, child: PackageKey) -> None:
@@ -65,8 +55,14 @@ class DependencyGraph:
             node.children.append(child)
 
     def dependents_of(self, key: PackageKey) -> list[PackageKey]:
-        """Which packages pull this one in. Answers "why do I have this?"."""
-        return [n.key for n in self.nodes.values() if key in n.children]
+        """Which packages pull this one in. Answers "why do I have this?".
+
+        Sorted and unique: cryptography has forty-three dependents in a real
+        Airflow tree, and a caller wanting to name them should not have to
+        deduplicate first.
+        """
+        found = {n.key for n in self.nodes.values() if key in n.children}
+        return sorted(found, key=lambda k: (k.name, k.version or ""))
 
     def path_to(self, key: PackageKey) -> list[PackageKey]:
         """The chain from a direct dependency down to this package.

@@ -15,7 +15,7 @@ from packaging.requirements import Requirement
 from scanner.cli import EXIT_OK, EXIT_USAGE_ERROR, EXIT_VULNERABILITIES_FOUND, build_parser, main
 from scanner.enums import Source
 from scanner.models import Vulnerability
-from scanner.resolver import DEFAULT_MAX_DEPTH, FetchResult
+from scanner.resolver import FetchResult
 from scanner.sources import QueryResult
 
 INDEX = {
@@ -83,12 +83,7 @@ def test_an_unknown_format_is_rejected() -> None:
 def test_the_defaults_are_console_and_the_resolver_depth() -> None:
     args = build_parser().parse_args(["requirements.txt"])
     assert args.format == "console"
-    assert args.max_depth == DEFAULT_MAX_DEPTH
     assert args.output is None
-
-
-def test_max_depth_is_read_as_a_number() -> None:
-    assert build_parser().parse_args(["requirements.txt", "--max-depth", "2"]).max_depth == 2
 
 
 def test_a_scan_reports_direct_and_transitive_counts(
@@ -140,19 +135,6 @@ def test_the_counts_exclude_packages_that_failed_to_resolve(
 
     out = capsys.readouterr().out
     assert "2 packages resolved (1 direct, 1 transitive)" in out
-
-
-def test_max_depth_stops_the_walk(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], offline: None
-) -> None:
-    """At depth 0 the direct dependency resolves but its children are not followed."""
-    path = manifest(tmp_path, "flask==1.0\n")
-
-    main([str(path), "--max-depth", "0"])
-
-    out = capsys.readouterr().out
-    assert "1 packages resolved (1 direct, 0 transitive)" in out
-    assert "click" not in out
 
 
 def test_an_empty_manifest_scans_cleanly(

@@ -16,7 +16,7 @@ from scanner.osv import OSVClient
 from scanner.parsers import parse_requirements_txt
 from scanner.pypi import PyPIClient
 from scanner.report import build
-from scanner.resolver import DEFAULT_MAX_DEPTH, resolve
+from scanner.resolver import resolve
 from scanner.sources import merge
 
 # Exit codes. Chosen to match the convention CI tools use (and Socket's own
@@ -56,12 +56,6 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("console", "json"),
         default="console",
         help="output format (default: console)",
-    )
-    parser.add_argument(
-        "--max-depth",
-        type=int,
-        default=DEFAULT_MAX_DEPTH,
-        help=f"how deep to follow transitive dependencies (default: {DEFAULT_MAX_DEPTH})",
     )
     parser.add_argument(
         "--output",
@@ -118,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     # the report and `scanner --format json | jq` works.
     parsed = parse_requirements_txt(args.manifest)
     note("resolving...")
-    graph = resolve(parsed.dependencies, PyPIClient().fetch, max_depth=args.max_depth)
+    graph = resolve(parsed.dependencies, PyPIClient().fetch)
 
     packages = [node.key for node in graph.nodes.values() if not node.failed]
     note(f"checking {len(packages)} packages against OSV...")
