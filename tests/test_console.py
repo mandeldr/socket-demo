@@ -158,3 +158,13 @@ def test_the_header_stays_quiet_when_nothing_repeats() -> None:
 
     assert "2 requirements" in text
     assert "packages)" not in text
+
+
+def test_the_console_says_when_the_tree_was_cut_short() -> None:
+    graph = DependencyGraph()
+    graph.add_node(key("deep-thing"), depth=5, truncated=True)
+
+    text = render(report_for(graph, {}))
+
+    assert "not followed past the depth limit 1:" in text
+    assert "deep-thing" in text

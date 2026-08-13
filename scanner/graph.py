@@ -20,6 +20,10 @@ class GraphNode:
     # None for a direct dependency: it came from the manifest.
     parent: PackageKey | None = None
     failed: bool = False  # the lookup did not produce a version
+    # True when this package has requirements we chose not to follow because
+    # of the depth limit. Without it a subtree we never looked at is
+    # indistinguishable from a package that genuinely has no dependencies.
+    truncated: bool = False
     # When the newest release was published, for spotting packages nobody has
     # touched in years. None when the registry did not say.
     last_release: datetime | None = None
@@ -44,9 +48,15 @@ class DependencyGraph:
         parent: PackageKey | None = None,
         failed: bool = False,
         last_release: datetime | None = None,
+        truncated: bool = False,
     ) -> None:
         self.nodes[key] = GraphNode(
-            key, depth, parent=parent, failed=failed, last_release=last_release
+            key,
+            depth,
+            parent=parent,
+            failed=failed,
+            last_release=last_release,
+            truncated=truncated,
         )
 
     def add_edge(self, parent: PackageKey, child: PackageKey) -> None:

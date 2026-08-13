@@ -87,12 +87,16 @@ def resolve(
         if key in graph.nodes:
             continue
 
+        # Anything with requirements we are about to not follow is recorded as
+        # truncated, so the report can say the tree was cut rather than let a
+        # subtree we never examined pass for clean.
         graph.add_node(
             key,
             depth,
             parent=parent,
             failed=not metadata.ok,
             last_release=metadata.last_release,
+            truncated=bool(metadata.requirements) and depth >= max_depth,
         )
         if not metadata.ok:
             graph.errors.append(ResolutionError(name, metadata.error or "unknown error"))

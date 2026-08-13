@@ -67,6 +67,9 @@ def build(
             for line in parsed.skipped
         ],
         "unmaintained": _unmaintained(resolved, now, stale_after_days),
+        # Packages whose requirements we stopped following. Saying so keeps a
+        # subtree we never examined from reading as one we found clean.
+        "truncated": sorted(n.key.name for n in resolved if n.truncated),
         "unresolved": [{"package": e.package, "reason": e.error} for e in graph.errors],
         "sources": {
             "queried": sorted(source_errors),
@@ -142,6 +145,7 @@ def _summary(
         "packages_requested": requested,
         "skipped": len(parsed.skipped),
         "unresolved": unresolved,
+        "truncated": len([n for n in resolved if n.truncated]),
         "total_packages": len(resolved),
         "direct": len([n for n in resolved if n.depth == 0]),
         "transitive": len([n for n in resolved if n.depth > 0]),

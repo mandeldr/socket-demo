@@ -223,3 +223,34 @@ def test_the_last_release_date_reaches_the_graph() -> None:
     graph = resolve(direct("abandoned"), fetch)
 
     assert graph.nodes[key("abandoned", "1.0")].last_release == published
+
+
+# --- the depth limit -------------------------------------------------------
+
+
+def test_a_package_cut_off_by_the_depth_limit_is_marked() -> None:
+    """Otherwise a subtree we never looked at is indistinguishable from a leaf,
+    and the scan reports clean about packages it never examined."""
+    graph = resolve(direct("a"), fake_index({"a": ["b"], "b": ["c"], "c": []}), max_depth=1)
+
+    assert graph.nodes[key("b", "1.0")].truncated is True
+    assert graph.nodes[key("a", "1.0")].truncated is False
+
+
+def test_a_genuine_leaf_at_the_depth_limit_is_not_marked() -> None:
+    """Nothing was cut off - it really has no requirements."""
+    graph = resolve(direct("a"), fake_index({"a": ["b"], "b": []}), max_depth=1)
+
+    assert graph.nodes[key("b", "1.0")].truncated is False
+
+
+def test_nothing_is_marked_when_the_tree_fits() -> None:
+    graph = resolve(direct("a"), fake_index({"a": ["b"], "b": ["c"], "c": []}), max_depth=5)
+
+    assert not any(node.truncated for node in graph.nodes.values())
+
+
+def test_a_failed_package_is_not_also_called_truncated() -> None:
+    graph = resolve(direct("ghost"), fake_index({}), max_depth=0)
+
+    assert graph.nodes[key("ghost", None)].truncated is False
