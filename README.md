@@ -162,13 +162,18 @@ not determine it, not that it does not matter.
 
 ## Limitations
 
-- **Versions are not unified.** Each requirement is resolved independently, so one
-  package can appear at two versions — `urllib3==2.2.1` from the manifest and
-  `2.7.0` pulled in by `requests`. pip installs exactly one. The scanner therefore
-  over-reports: it can flag a version that would never be installed. Unifying
-  properly needs a backtracking solver.
+- **No backtracking.** A package is resolved once, against every constraint seen
+  before that point. A constraint arriving afterwards that would have narrowed the
+  choice is reported as a conflict rather than applied, because revisiting it would
+  invalidate the subtree already walked. Checked against `uv pip compile` on
+  Airflow's 711 pinned packages: 715 of 717 versions match, nothing is missed, and
+  92 genuine constraint conflicts are named.
 - **Extras are dropped.** `celery[redis]` is scanned as `celery`, so the extra's
   own dependencies are not resolved.
+- **Dependencies are read, not built.** Metadata comes from PyPI's JSON API, so
+  nothing being scanned is ever downloaded or executed. The cost is that a package
+  computing its requirements at build time is invisible — pip sees those because it
+  builds; we do not, deliberately.
 - **Requests are sequential.** Scanning 1,316 packages takes about five minutes,
   most of it waiting on OSV. The requests are independent, so this is the obvious
   next thing to parallelise.
@@ -183,7 +188,8 @@ resolved tree, so that side is a parsing problem rather than a resolution one.
 ## Development
 
 ```bash
-pytest            # 276 tests, no network — every client takes an injected session
+pytest            # 282 tests, no network — every client takes an injected session
+pytest -m network # compares our resolution against `uv pip compile`
 ruff format .
 ruff check .
 mypy scanner/ tests/

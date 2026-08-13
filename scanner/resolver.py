@@ -6,6 +6,7 @@ from typing import NamedTuple
 
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
+from packaging.utils import canonicalize_name
 
 from scanner.enums import EcoSystem
 from scanner.graph import DependencyGraph, ResolutionError
@@ -37,6 +38,34 @@ class FetchResult:
 Fetch = Callable[[str, SpecifierSet], FetchResult]
 
 
+def _requirements_by_name(requirements: list[Requirement]) -> dict[str, SpecifierSet]:
+    """One constraint per package, however many times it is listed.
+
+    A package can name the same requirement more than once under different
+    markers - `foo>=1.0; python_version<"3.10"` beside `foo>=2.0` - and those
+    are constraints on one package, not two.
+    """
+    combined: dict[str, SpecifierSet] = {}
+    for requirement in requirements:
+        name = canonicalize_name(requirement.name)
+        combined[name] = combined.get(name, SpecifierSet()) & requirement.specifier
+    return combined
+
+
+def _record(graph: DependencyGraph, parent: PackageKey | None, key: PackageKey) -> None:
+    """Note how we arrived at a package.
+
+    Every requester gets an edge, including ones that arrive after the package
+    was resolved - that is what `dependents_of` reads to say which package a
+    user actually has to upgrade.
+    """
+    if parent is None:
+        if key not in graph.roots:
+            graph.roots.append(key)
+    else:
+        graph.add_edge(parent, key)
+
+
 class _Lookup(NamedTuple):
     """A package waiting to be looked up, and how we got to it.
 
@@ -57,8 +86,13 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
     most useful answer to "why is this here".
 
     There is no depth limit. The walk is bounded by the graph itself - a
-    package already in it is never expanded again - so a limit would only mean
-    looking at less of a tree that pip installs all of.
+    package already resolved is never resolved again - so a limit would only
+    mean looking at less of a tree that pip installs all of.
+
+    A package is resolved once, against every constraint anything has placed on
+    it. The manifest may pin `adlfs==2024.4.1` while a provider asks for
+    `adlfs>=2023.10.0`; answering those separately gives two versions where pip
+    installs one, so the constraints are combined before asking.
     """
     graph = DependencyGraph()
     queue = deque(
@@ -68,22 +102,38 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
         for dep in direct
     )
 
+    # What has been asked of each package, and what we settled on.
+    asked: dict[str, SpecifierSet] = {}
+    chosen: dict[str, PackageKey] = {}
+
     while queue:
         name, spec, depth, parent = queue.popleft()
 
-        metadata = fetch(name, spec)
-        key = PackageKey(name, metadata.version, EcoSystem.PYTHON)
+        combined = asked.get(name, SpecifierSet()) & spec
+        asked[name] = combined
 
-        if parent is None:
-            if key not in graph.roots:
-                graph.roots.append(key)
-        else:
-            graph.add_edge(parent, key)
-
-        # Already seen: a shared dependency, a duplicate, or a cycle coming
-        # back around. Either way there is nothing left to expand.
-        if key in graph.nodes:
+        settled = chosen.get(name)
+        if settled is not None:
+            # Already resolved. If the version still satisfies what is now
+            # being asked, record the edge and move on; otherwise say the
+            # constraints disagree rather than quietly carrying two versions.
+            if settled.version and not combined.contains(settled.version):
+                graph.errors.append(ResolutionError(name, f"conflicting constraints: {combined}"))
+            _record(graph, parent, settled)
             continue
+
+        if combined.is_unsatisfiable():
+            key = PackageKey(name, None, EcoSystem.PYTHON)
+            chosen[name] = key
+            _record(graph, parent, key)
+            graph.add_node(key, depth, parent=parent, failed=True)
+            graph.errors.append(ResolutionError(name, f"conflicting constraints: {combined}"))
+            continue
+
+        metadata = fetch(name, combined)
+        key = PackageKey(name, metadata.version, EcoSystem.PYTHON)
+        chosen[name] = key
+        _record(graph, parent, key)
 
         graph.add_node(
             key,
@@ -96,7 +146,7 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
             graph.errors.append(ResolutionError(name, metadata.error or "unknown error"))
             continue
 
-        for requirement in metadata.requirements:
-            queue.append(_Lookup(requirement.name, requirement.specifier, depth + 1, key))
+        for required, constraint in _requirements_by_name(metadata.requirements).items():
+            queue.append(_Lookup(required, constraint, depth + 1, key))
 
     return graph

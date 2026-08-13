@@ -7,6 +7,7 @@ touching the network. `fake_index` below builds one from a plain dict.
 from datetime import datetime, timezone
 
 from packaging.requirements import Requirement
+from packaging.version import Version
 
 from scanner.enums import EcoSystem
 from scanner.models import Dependency, PackageKey
@@ -21,6 +22,26 @@ def direct(*names: str) -> list[Dependency]:
     return [
         Dependency(key(n), raw_spec="==1.0", is_direct=True, depth=0, parent=None) for n in names
     ]
+
+
+def versioned_index(index: dict[str, list[str]], versions: dict[str, list[str]]):
+    """A fake PyPI that honours the constraint it is given.
+
+    `fake_index` always answers "1.0"; this one picks the highest available
+    version matching the spec, which is what makes constraint unification
+    observable.
+    """
+
+    def fetch(name: str, spec) -> FetchResult:
+        if name not in index:
+            return FetchResult(error="no such package on PyPI")
+        available = [Version(v) for v in versions.get(name, ["1.0"])]
+        matching = list(spec.filter(available))
+        if not matching:
+            return FetchResult(error=f"no release satisfies {spec}")
+        return FetchResult(str(max(matching)), [Requirement(r) for r in index[name]])
+
+    return fetch
 
 
 def fake_index(index: dict[str, list[str]]):
@@ -217,3 +238,89 @@ def test_the_last_release_date_reaches_the_graph() -> None:
     graph = resolve(direct("abandoned"), fetch)
 
     assert graph.nodes[key("abandoned", "1.0")].last_release == published
+
+
+# --- one version per package ----------------------------------------------
+
+
+def test_a_pinned_package_is_not_also_resolved_from_a_range() -> None:
+    """The bug this fixes: the manifest pins adlfs==2024.4.1 and a provider
+    asks for adlfs>=2023.10.0. Resolved separately that is two versions; pip
+    installs one."""
+    index = {"a": ["adlfs>=2023.10.0"], "adlfs": []}
+    versions = {"adlfs": ["2024.4.1", "2026.8.0"], "a": ["1.0"]}
+
+    graph = resolve(
+        [
+            Dependency(key("a"), raw_spec="==1.0", is_direct=True, depth=0, parent=None),
+            Dependency(
+                key("adlfs", "2024.4.1"),
+                raw_spec="==2024.4.1",
+                is_direct=True,
+                depth=0,
+                parent=None,
+            ),
+        ],
+        versioned_index(index, versions),
+    )
+
+    adlfs = [n for n in graph.nodes.values() if n.key.name == "adlfs"]
+    assert [n.key.version for n in adlfs] == ["2024.4.1"]
+
+
+def test_a_later_constraint_narrows_what_is_already_chosen() -> None:
+    """Constraints seen before resolving are combined, so the answer satisfies
+    all of them."""
+    index = {"a": ["shared>=2.0", "shared<3.0"], "shared": []}
+    versions = {"shared": ["1.0", "2.5", "3.5"], "a": ["1.0"]}
+
+    graph = resolve(direct("a"), versioned_index(index, versions))
+
+    shared = [n for n in graph.nodes.values() if n.key.name == "shared"]
+    assert [n.key.version for n in shared] == ["2.5"]
+
+
+def test_a_constraint_arriving_after_resolution_is_reported_not_applied() -> None:
+    """We resolve on first sight and do not backtrack. If something later asks
+    for a version we have already ruled out, the honest answer is to say the
+    constraints disagree rather than to silently carry two versions."""
+    index = {"a": ["shared>=2.0"], "b": ["shared<3.0"], "shared": []}
+    versions = {"shared": ["1.0", "2.5", "3.5"], "a": ["1.0"], "b": ["1.0"]}
+
+    graph = resolve(direct("a", "b"), versioned_index(index, versions))
+
+    shared = [n for n in graph.nodes.values() if n.key.name == "shared"]
+    assert len(shared) == 1, "still one node, not two versions"
+    assert any(e.package == "shared" and "conflict" in e.error for e in graph.errors)
+
+
+def test_every_requester_still_gets_an_edge() -> None:
+    """Deduplicating the node must not lose who asked for it - that is what
+    the remediation advice is built from."""
+    index = {"a": ["shared>=1.0"], "b": ["shared>=1.0"], "shared": []}
+    versions = {"shared": ["2.0"], "a": ["1.0"], "b": ["1.0"]}
+
+    graph = resolve(direct("a", "b"), versioned_index(index, versions))
+
+    dependents = graph.dependents_of(key("shared", "2.0"))
+    assert sorted(k.name for k in dependents) == ["a", "b"]
+
+
+def test_constraints_that_cannot_all_be_met_are_reported() -> None:
+    """Better to name the conflict than to quietly carry two versions."""
+    index = {"a": ["shared>=3.0"], "b": ["shared<2.0"], "shared": []}
+    versions = {"shared": ["1.0", "3.5"], "a": ["1.0"], "b": ["1.0"]}
+
+    graph = resolve(direct("a", "b"), versioned_index(index, versions))
+
+    assert any("shared" == e.package for e in graph.errors)
+    assert any("conflict" in e.error for e in graph.errors)
+
+
+def test_a_package_appears_once_however_many_things_need_it() -> None:
+    index = {f"p{i}": ["shared>=1.0"] for i in range(5)} | {"shared": []}
+    versions = {"shared": ["2.0"], **{f"p{i}": ["1.0"] for i in range(5)}}
+
+    graph = resolve(direct(*[f"p{i}" for i in range(5)]), versioned_index(index, versions))
+
+    assert len([n for n in graph.nodes.values() if n.key.name == "shared"]) == 1
