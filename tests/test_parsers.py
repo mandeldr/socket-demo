@@ -45,14 +45,6 @@ def test_single_pinned_requirement(tmp_path: Path) -> None:
     assert dep.key.eco_system is EcoSystem.PYTHON
 
 
-def test_every_manifest_entry_is_direct_at_depth_zero(tmp_path: Path) -> None:
-    result = parse_requirements_txt(write(tmp_path, "flask==3.0.0\n"))
-    (dep,) = result.dependencies
-    assert dep.is_direct is True
-    assert dep.depth == 0
-    assert dep.parent is None
-
-
 def test_raw_spec_is_preserved(tmp_path: Path) -> None:
     """The original constraint is kept even when we cannot pin a version."""
     result = parse_requirements_txt(write(tmp_path, "pandas>=2.0.0,<3.0.0\n"))
@@ -301,3 +293,33 @@ def test_a_marker_survives_option_stripping(tmp_path: Path) -> None:
     manifest.write_text('tomli==2.0.1 ; python_version < "3.11" --hash=sha256:aaa\n')
 
     assert [d.key.name for d in parse_requirements_txt(manifest).dependencies] == ["tomli"]
+
+
+# --- extras ----------------------------------------------------------------
+
+
+def test_a_requested_extra_is_kept(tmp_path: Path) -> None:
+    """`celery[redis]` installs redis. Dropping the extra makes it invisible."""
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("celery[redis]==5.3.6\n")
+
+    (dep,) = parse_requirements_txt(manifest).dependencies
+
+    assert dep.key.name == "celery"
+    assert dep.extras == frozenset({"redis"})
+
+
+def test_several_extras_are_all_kept(tmp_path: Path) -> None:
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("celery[redis,auth]==5.3.6\n")
+
+    (dep,) = parse_requirements_txt(manifest).dependencies
+
+    assert dep.extras == frozenset({"redis", "auth"})
+
+
+def test_no_extras_is_an_empty_set(tmp_path: Path) -> None:
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("celery==5.3.6\n")
+
+    assert parse_requirements_txt(manifest).dependencies[0].extras == frozenset()

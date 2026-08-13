@@ -25,7 +25,9 @@ class PyPIClient:
         self.timeout = timeout
         self._cache: dict[str, tuple[dict | None, str | None]] = {}
 
-    def fetch(self, name: str, spec: SpecifierSet) -> FetchResult:
+    def fetch(
+        self, name: str, spec: SpecifierSet, extras: frozenset[str] = frozenset()
+    ) -> FetchResult:
         """Return the version satisfying `spec` and that version's requirements."""
         name = canonicalize_name(name)
 
@@ -46,12 +48,12 @@ class PyPIClient:
         # The page we already have describes the latest release, so choosing it
         # costs nothing more.
         if version == latest:
-            return FetchResult(latest, _requirements(page), last_release=published)
+            return FetchResult(latest, _requirements(page, extras), last_release=published)
 
         pinned, error = self._get(f"{BASE_URL}/{name}/{version}/json")
         if error or pinned is None:
             return FetchResult(error=f"metadata for {version} unavailable ({error})")
-        return FetchResult(version, _requirements(pinned), last_release=published)
+        return FetchResult(version, _requirements(pinned, extras), last_release=published)
 
     def _get(self, url: str) -> tuple[dict | None, str | None]:
         """Fetch and decode a URL. Returns (payload, error); exactly one is set."""
@@ -74,6 +76,24 @@ class PyPIClient:
 
         self._cache[url] = result
         return result
+
+
+def _wanted(requirement: Requirement, extras: frozenset[str]) -> bool:
+    """Whether this requirement is installed, given the extras asked for.
+
+    An `extra == "redis"` marker means "only when redis was requested", so it
+    is a condition to evaluate rather than a reason to skip. Markers about the
+    environment - sys_platform, python_version - are deliberately left alone:
+    they describe where a package installs, not whether it was opted into, and
+    a manifest scanned on a Mac may well be installed on Windows.
+    """
+    marker = requirement.marker
+    if marker is None or "extra" not in str(marker):
+        return True
+
+    # Evaluating with extra="" answers "would this install with no extras?".
+    # Then each requested extra gets its own turn.
+    return any(marker.evaluate({"extra": extra}) for extra in ("", *extras))
 
 
 def _last_release(page: dict) -> datetime | None:
@@ -102,7 +122,7 @@ def _parse_time(raw: str | None) -> datetime | None:
         return None
 
 
-def _requirements(page: dict) -> list[Requirement]:
+def _requirements(page: dict, extras: frozenset[str] = frozenset()) -> list[Requirement]:
     """Parse requires_dist, which is null for packages with no dependencies.
 
     Optional dependencies are skipped. A requirement guarded by an `extra`
@@ -120,7 +140,7 @@ def _requirements(page: dict) -> list[Requirement]:
         except InvalidRequirement:
             continue
 
-        if requirement.marker and "extra" in str(requirement.marker):
+        if not _wanted(requirement, extras):
             continue
 
         parsed.append(requirement)

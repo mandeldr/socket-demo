@@ -34,22 +34,26 @@ class FetchResult:
         return self.error is None
 
 
-# Given a package name and the constraint on it, look up the version to use.
-Fetch = Callable[[str, SpecifierSet], FetchResult]
+# Given a package name, the constraint on it, and any optional feature sets
+# asked for, look up the version to use and what it requires.
+Fetch = Callable[[str, SpecifierSet, frozenset[str]], FetchResult]
 
 
-def _requirements_by_name(requirements: list[Requirement]) -> dict[str, SpecifierSet]:
-    """One constraint per package, however many times it is listed.
+def _needs(metadata: FetchResult) -> list[tuple[str, SpecifierSet, frozenset[str]]]:
+    """What a package requires, one entry per required package.
 
     A package can name the same requirement more than once under different
     markers - `foo>=1.0; python_version<"3.10"` beside `foo>=2.0` - and those
-    are constraints on one package, not two.
+    are constraints on one package, not two. Extras are unioned for the same
+    reason: `celery[redis]` and `celery[auth]` are one celery with both.
     """
-    combined: dict[str, SpecifierSet] = {}
-    for requirement in requirements:
+    specs: dict[str, SpecifierSet] = {}
+    extras: dict[str, frozenset[str]] = {}
+    for requirement in metadata.requirements:
         name = canonicalize_name(requirement.name)
-        combined[name] = combined.get(name, SpecifierSet()) & requirement.specifier
-    return combined
+        specs[name] = specs.get(name, SpecifierSet()) & requirement.specifier
+        extras[name] = extras.get(name, frozenset()) | frozenset(requirement.extras)
+    return [(name, spec, extras[name]) for name, spec in specs.items()]
 
 
 def _record(graph: DependencyGraph, parent: PackageKey | None, key: PackageKey) -> None:
@@ -75,6 +79,7 @@ class _Lookup(NamedTuple):
 
     name: str
     spec: SpecifierSet
+    extras: frozenset[str]
     depth: int
     parent: PackageKey | None
 
@@ -98,19 +103,23 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
     queue = deque(
         # raw_spec carries the constraint from the manifest, so `flask==3.0.0`
         # resolves to 3.0.0 rather than whatever is currently latest
-        _Lookup(dep.key.name, SpecifierSet(dep.raw_spec), 0, None)
+        _Lookup(dep.key.name, SpecifierSet(dep.raw_spec), dep.extras, 0, None)
         for dep in direct
     )
 
     # What has been asked of each package, and what we settled on.
     asked: dict[str, SpecifierSet] = {}
+    wanted: dict[str, frozenset[str]] = {}
     chosen: dict[str, PackageKey] = {}
 
     while queue:
-        name, spec, depth, parent = queue.popleft()
+        name, spec, extras, depth, parent = queue.popleft()
 
         combined = asked.get(name, SpecifierSet()) & spec
         asked[name] = combined
+        previous_extras = wanted.get(name, frozenset())
+        all_extras = previous_extras | extras
+        wanted[name] = all_extras
 
         settled = chosen.get(name)
         if settled is not None:
@@ -130,7 +139,7 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
             graph.errors.append(ResolutionError(name, f"conflicting constraints: {combined}"))
             continue
 
-        metadata = fetch(name, combined)
+        metadata = fetch(name, combined, all_extras)
         key = PackageKey(name, metadata.version, EcoSystem.PYTHON)
         chosen[name] = key
         _record(graph, parent, key)
@@ -146,7 +155,7 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
             graph.errors.append(ResolutionError(name, metadata.error or "unknown error"))
             continue
 
-        for required, constraint in _requirements_by_name(metadata.requirements).items():
-            queue.append(_Lookup(required, constraint, depth + 1, key))
+        for required, constraint, wants in _needs(metadata):
+            queue.append(_Lookup(required, constraint, wants, depth + 1, key))
 
     return graph

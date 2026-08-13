@@ -38,9 +38,7 @@ def parse_requirements_txt(path: Path) -> ParseResult:
             Dependency(
                 key=PackageKey(req.name, _pinned_version(req), EcoSystem.PYTHON),
                 raw_spec=str(req.specifier),
-                is_direct=True,
-                depth=0,
-                parent=None,
+                extras=frozenset(req.extras),
             )
         )
 

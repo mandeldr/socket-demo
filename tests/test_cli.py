@@ -27,7 +27,7 @@ INDEX = {
 class FakeClient:
     """Stands in for PyPIClient. Serves INDEX and knows nothing else."""
 
-    def fetch(self, name: str, spec) -> FetchResult:
+    def fetch(self, name: str, spec, extras=frozenset()) -> FetchResult:
         if name not in INDEX:
             return FetchResult(error="no such package on PyPI")
         return FetchResult(

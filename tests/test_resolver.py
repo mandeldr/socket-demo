@@ -19,9 +19,7 @@ def key(name: str, version: str | None = "1.0") -> PackageKey:
 
 
 def direct(*names: str) -> list[Dependency]:
-    return [
-        Dependency(key(n), raw_spec="==1.0", is_direct=True, depth=0, parent=None) for n in names
-    ]
+    return [Dependency(key(n), raw_spec="==1.0") for n in names]
 
 
 def versioned_index(index: dict[str, list[str]], versions: dict[str, list[str]]):
@@ -32,7 +30,7 @@ def versioned_index(index: dict[str, list[str]], versions: dict[str, list[str]])
     observable.
     """
 
-    def fetch(name: str, spec) -> FetchResult:
+    def fetch(name: str, spec, _extras=frozenset()) -> FetchResult:
         if name not in index:
             return FetchResult(error="no such package on PyPI")
         available = [Version(v) for v in versions.get(name, ["1.0"])]
@@ -47,7 +45,7 @@ def versioned_index(index: dict[str, list[str]], versions: dict[str, list[str]])
 def fake_index(index: dict[str, list[str]]):
     """Build a fetch function from {package: [requirement strings]}."""
 
-    def fetch(name: str, _spec) -> FetchResult:
+    def fetch(name: str, _spec, _extras=frozenset()) -> FetchResult:
         if name not in index:
             return FetchResult(error="no such package on PyPI")
         return FetchResult("1.0", [Requirement(r) for r in index[name]])
@@ -181,13 +179,11 @@ def test_a_pinned_direct_dependency_keeps_its_version() -> None:
     """The manifest said flask==2.0.0, so latest is the wrong answer."""
     seen: list[str] = []
 
-    def fetch(name: str, spec) -> FetchResult:
+    def fetch(name: str, spec, _extras=frozenset()) -> FetchResult:
         seen.append(str(spec))
         return FetchResult("2.0.0", [])
 
-    deps = [
-        Dependency(key("flask", "2.0.0"), raw_spec="==2.0.0", is_direct=True, depth=0, parent=None)
-    ]
+    deps = [Dependency(key("flask", "2.0.0"), raw_spec="==2.0.0")]
     resolve(deps, fetch)
     assert seen == ["==2.0.0"]
 
@@ -232,7 +228,7 @@ def test_the_last_release_date_reaches_the_graph() -> None:
     """The report needs it to spot packages nobody has touched in years."""
     published = datetime(2019, 1, 1, tzinfo=timezone.utc)
 
-    def fetch(name: str, _spec) -> FetchResult:
+    def fetch(name: str, _spec, _extras=frozenset()) -> FetchResult:
         return FetchResult("1.0", [], last_release=published)
 
     graph = resolve(direct("abandoned"), fetch)
@@ -252,14 +248,8 @@ def test_a_pinned_package_is_not_also_resolved_from_a_range() -> None:
 
     graph = resolve(
         [
-            Dependency(key("a"), raw_spec="==1.0", is_direct=True, depth=0, parent=None),
-            Dependency(
-                key("adlfs", "2024.4.1"),
-                raw_spec="==2024.4.1",
-                is_direct=True,
-                depth=0,
-                parent=None,
-            ),
+            Dependency(key("a"), raw_spec="==1.0"),
+            Dependency(key("adlfs", "2024.4.1"), raw_spec="==2024.4.1"),
         ],
         versioned_index(index, versions),
     )
@@ -324,3 +314,67 @@ def test_a_package_appears_once_however_many_things_need_it() -> None:
     graph = resolve(direct(*[f"p{i}" for i in range(5)]), versioned_index(index, versions))
 
     assert len([n for n in graph.nodes.values() if n.key.name == "shared"]) == 1
+
+
+# --- extras through the walk ------------------------------------------------
+
+
+def extras_index():
+    """A fake PyPI where celery's redis requirement is behind an extra."""
+
+    def fetch(name: str, spec, extras=frozenset()) -> FetchResult:
+        table = {
+            "celery": ["billiard>=4.2.0"] + (["redis>=4.5.2"] if "redis" in extras else []),
+            "billiard": [],
+            "redis": [],
+            "app": [],
+        }
+        if name not in table:
+            return FetchResult(error="no such package on PyPI")
+        return FetchResult("1.0", [Requirement(r) for r in table[name]])
+
+    return fetch
+
+
+def test_a_requested_extra_pulls_in_its_dependency() -> None:
+    graph = resolve(
+        [Dependency(key("celery"), raw_spec="==1.0", extras=frozenset({"redis"}))],
+        extras_index(),
+    )
+
+    assert "redis" in {n.key.name for n in graph.nodes.values()}
+
+
+def test_without_the_extra_that_dependency_is_absent() -> None:
+    graph = resolve([Dependency(key("celery"), raw_spec="==1.0")], extras_index())
+
+    assert "redis" not in {n.key.name for n in graph.nodes.values()}
+
+
+def test_an_extra_requested_transitively_is_honoured() -> None:
+    """A package can ask for another package's extras too."""
+
+    def fetch(name: str, spec, extras=frozenset()) -> FetchResult:
+        table = {
+            "app": ["celery[redis]>=1.0"],
+            "celery": (["redis>=4.5.2"] if "redis" in extras else []),
+            "redis": [],
+        }
+        if name not in table:
+            return FetchResult(error="no such package on PyPI")
+        return FetchResult("1.0", [Requirement(r) for r in table[name]])
+
+    graph = resolve(direct("app"), fetch)
+
+    assert "redis" in {n.key.name for n in graph.nodes.values()}
+
+
+def test_extras_do_not_change_the_resolved_version() -> None:
+    """`celery` and `celery[redis]` are one installed package, not two."""
+    graph = resolve(
+        [Dependency(key("celery"), raw_spec="==1.0", extras=frozenset({"redis"}))],
+        extras_index(),
+    )
+
+    celery = [n for n in graph.nodes.values() if n.key.name == "celery"]
+    assert len(celery) == 1

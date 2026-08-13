@@ -31,11 +31,13 @@ class PackageKey:
 
 @dataclass
 class Dependency:
+    """A requirement as the manifest wrote it, before anything is resolved."""
+
     key: PackageKey
     raw_spec: str
-    is_direct: bool
-    depth: int
-    parent: PackageKey | None
+    # Optional feature sets the manifest opted into: `celery[redis]` installs
+    # redis, so dropping this makes a real dependency invisible.
+    extras: frozenset[str] = frozenset()
 
 
 @dataclass

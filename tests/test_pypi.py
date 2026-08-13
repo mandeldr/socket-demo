@@ -355,3 +355,61 @@ def test_a_project_with_only_prereleases_still_resolves() -> None:
     )
 
     assert client.fetch("new-thing", SpecifierSet(">=0")).version == "1.0.0b1"
+
+
+# --- extras -----------------------------------------------------------------
+
+
+def extras_page() -> FakeResponse:
+    """A package whose requires_dist mixes plain, extra-guarded and platform."""
+    return package_page(
+        "5.3.6",
+        [
+            "billiard>=4.2.0",
+            'redis>=4.5.2 ; extra == "redis"',
+            'pyopenssl ; extra == "auth"',
+            'pywin32 ; sys_platform == "win32"',
+        ],
+        ["5.3.6"],
+    )
+
+
+def test_an_extra_is_not_installed_unless_it_is_asked_for() -> None:
+    client, _ = client_for({"https://pypi.org/pypi/celery/json": extras_page()})
+
+    result = client.fetch("celery", SpecifierSet())
+
+    assert [r.name for r in result.requirements] == ["billiard", "pywin32"]
+
+
+def test_asking_for_an_extra_includes_its_requirements() -> None:
+    client, _ = client_for({"https://pypi.org/pypi/celery/json": extras_page()})
+
+    result = client.fetch("celery", SpecifierSet(), extras=frozenset({"redis"}))
+
+    assert [r.name for r in result.requirements] == ["billiard", "redis", "pywin32"]
+
+
+def test_asking_for_two_extras_includes_both() -> None:
+    client, _ = client_for({"https://pypi.org/pypi/celery/json": extras_page()})
+
+    result = client.fetch("celery", SpecifierSet(), extras=frozenset({"redis", "auth"}))
+
+    assert {r.name for r in result.requirements} == {"billiard", "redis", "pyopenssl", "pywin32"}
+
+
+def test_an_extra_that_does_not_exist_adds_nothing() -> None:
+    client, _ = client_for({"https://pypi.org/pypi/celery/json": extras_page()})
+
+    result = client.fetch("celery", SpecifierSet(), extras=frozenset({"nonsense"}))
+
+    assert [r.name for r in result.requirements] == ["billiard", "pywin32"]
+
+
+def test_platform_markers_are_kept_whether_or_not_extras_are_asked_for() -> None:
+    """Those describe where a package installs, not whether it was opted into."""
+    client, _ = client_for({"https://pypi.org/pypi/celery/json": extras_page()})
+
+    for extras in (frozenset(), frozenset({"redis"})):
+        result = client.fetch("celery", SpecifierSet(), extras=extras)
+        assert "pywin32" in [r.name for r in result.requirements]

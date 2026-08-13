@@ -94,7 +94,9 @@ and afterwards to explain findings — `path_to` answers "why is this here" and
 - **`packaging`** (PyPA) for version specifiers, environment markers, and PEP 503
   name canonicalization. Using `canonicalize_name()` means package names normalize
   exactly the way pip normalizes them, so `zope.interface`, `zope-interface` and
-  `zope_interface` are correctly treated as one project rather than three.
+  `zope_interface` are correctly treated as one project rather than three. Its
+  marker evaluation is what makes `celery[redis]` pull in redis while plain
+  `celery` does not.
 - **`requests`** for HTTP, with `urllib3`'s own `Retry` for backoff — it already
   ships underneath requests and honours `Retry-After`, so there was nothing to
   hand-roll.
@@ -168,8 +170,6 @@ not determine it, not that it does not matter.
   invalidate the subtree already walked. Checked against `uv pip compile` on
   Airflow's 711 pinned packages: 715 of 717 versions match, nothing is missed, and
   92 genuine constraint conflicts are named.
-- **Extras are dropped.** `celery[redis]` is scanned as `celery`, so the extra's
-  own dependencies are not resolved.
 - **Dependencies are read, not built.** Metadata comes from PyPI's JSON API, so
   nothing being scanned is ever downloaded or executed. The cost is that a package
   computing its requirements at build time is invisible — pip sees those because it
