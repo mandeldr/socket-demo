@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "manifest",
         type=Path,
-        help="path to a manifest file (requirements.txt or package.json)",
+        help="path to a requirements.txt manifest",
     )
     parser.add_argument(
         "--format",
