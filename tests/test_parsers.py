@@ -211,3 +211,93 @@ def test_hostile_fixture_does_not_crash() -> None:
     result = parse_requirements_txt(FIXTURES / "hostile.txt")
     assert result.dependencies  # some lines are real requirements
     assert result.skipped  # and plenty are not
+
+
+# --- line continuations ----------------------------------------------------
+
+
+def test_a_backslash_continuation_is_one_requirement(tmp_path: Path) -> None:
+    """pip-compile and `pip freeze --require-hashes` write every pin this way,
+    so a scanner that cannot read them cannot read the most careful manifests."""
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text(
+        "flask==3.0.0 \\\n"
+        "    --hash=sha256:cfadcdb638b609361d29ec22360d6070a77d7463dcb3ab08d2c2f2 \\\n"
+        "    --hash=sha256:99c2b1b0f9f0e37e5e8b9b1b1e0fb4d5b8e6c8e0d0e1f2a3b4c5d6\n"
+    )
+
+    result = parse_requirements_txt(manifest)
+
+    assert [d.key.name for d in result.dependencies] == ["flask"]
+    assert result.skipped == []
+
+
+def test_a_continued_line_is_reported_at_its_first_line(tmp_path: Path) -> None:
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("flask==3.0.0\n!!!broken!!! \\\n    keeps going\n")
+
+    result = parse_requirements_txt(manifest)
+
+    (skipped,) = result.skipped
+    assert skipped.line_number == 2
+
+
+def test_several_continued_requirements_in_a_row(tmp_path: Path) -> None:
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text(
+        "flask==3.0.0 \\\n    --hash=sha256:aaa\nrequests==2.31.0 \\\n    --hash=sha256:bbb\n"
+    )
+
+    result = parse_requirements_txt(manifest)
+
+    assert [d.key.name for d in result.dependencies] == ["flask", "requests"]
+
+
+def test_a_trailing_backslash_at_the_end_of_the_file(tmp_path: Path) -> None:
+    """Malformed, but it should not take the scan down."""
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("flask==3.0.0 \\\n")
+
+    assert [d.key.name for d in parse_requirements_txt(manifest).dependencies] == ["flask"]
+
+
+def test_a_backslash_inside_a_line_is_not_a_continuation(tmp_path: Path) -> None:
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("flask==3.0.0\nrequests==2.31.0\n")
+
+    assert len(parse_requirements_txt(manifest).dependencies) == 2
+
+
+def test_a_continuation_still_has_its_comment_stripped(tmp_path: Path) -> None:
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("flask==3.0.0 \\\n    --hash=sha256:aaa  # pinned by security\n")
+
+    result = parse_requirements_txt(manifest)
+
+    assert [d.key.name for d in result.dependencies] == ["flask"]
+
+
+def test_per_requirement_options_are_stripped(tmp_path: Path) -> None:
+    """`--hash` and friends belong to the requirement but are not part of it."""
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("flask==3.0.0 --hash=sha256:aaa --hash=sha256:bbb\n")
+
+    assert [d.key.name for d in parse_requirements_txt(manifest).dependencies] == ["flask"]
+
+
+def test_a_line_that_is_only_a_pip_option_is_still_skipped(tmp_path: Path) -> None:
+    """Stripping options must not turn `--index-url ...` into an empty line."""
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("--index-url https://example.com/simple\n")
+
+    result = parse_requirements_txt(manifest)
+
+    assert result.dependencies == []
+    assert [s.reason for s in result.skipped] == [SkipReason.PIP_OPTION]
+
+
+def test_a_marker_survives_option_stripping(tmp_path: Path) -> None:
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text('tomli==2.0.1 ; python_version < "3.11" --hash=sha256:aaa\n')
+
+    assert [d.key.name for d in parse_requirements_txt(manifest).dependencies] == ["tomli"]

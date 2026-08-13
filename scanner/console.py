@@ -3,65 +3,51 @@
 Everything here reads from the report dictionary and nothing else. It cannot
 show a number the JSON does not also carry, which is the point: two formatters
 written against the same source cannot drift apart.
+
+Findings go in a table because there are often a lot of them - a manifest with
+an old django in it produces nearly fifty - and a table shows one per line
+instead of four.
 """
 
+import io
 
-def render(report: dict, show_skipped: bool = False) -> str:
+from rich.box import SIMPLE
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
+
+
+def render(report: dict, show_skipped: bool = False, width: int | None = None) -> str:
     """The console version, built from the same data the JSON carries."""
-    summary = report["summary"]
-    lines = [report["manifest"], *_header(summary), ""]
+    # markup=False so a summary containing square brackets is printed rather
+    # than read as styling. record=True is what lets us hand back a string.
+    console = Console(file=io.StringIO(), record=True, width=width, markup=False)
 
-    if report["findings"]:
-        counts = "  ".join(f"{level} {n}" for level, n in summary["by_severity"].items())
-        lines.append(
-            f"{summary['vulnerable_packages']} vulnerable "
-            f"({summary['vulnerable_percent']}% of packages), "
-            f"{summary['total_vulnerabilities']} findings{_ignored_note(report)}"
-        )
-        lines.append(f"  {counts}")
-        if summary["min_severity"]:
-            lines.append(
-                f"  showing {summary['min_severity']} and above; "
-                f"{summary['hidden_by_severity']} hidden"
-            )
-        for finding in report["findings"]:
-            lines += _render_finding(finding)
-    else:
-        lines.append(f"no known vulnerabilities{_ignored_note(report)}")
+    console.print(report["manifest"])
+    for line in _header(report["summary"]):
+        console.print(line)
 
-    if report["skipped"] and show_skipped:
-        lines.append("")
-        lines.append("skipped:")
-        lines += [
-            f"  line {item['line']}: {item['content']}  ({item['reason']})"
-            for item in report["skipped"]
-        ]
-
-    if report["unmaintained"]:
-        lines.append("")
-        lines.append(f"unmaintained {len(report['unmaintained'])}:")
-        lines += [
-            f"  {item['package']}: no release in {item['days_since_release']} days"
-            for item in report["unmaintained"]
-        ]
-
-    if report["unresolved"]:
-        lines.append("")
-        lines.append(f"could not resolve {len(report['unresolved'])}:")
-        lines += [f"  {item['package']}: {item['reason']}" for item in report["unresolved"]]
+    _print_findings(console, report)
+    skipped = _skipped_lines(report) if show_skipped else []
+    _print_section(console, "skipped:", skipped)
+    _print_section(
+        console, f"unmaintained {len(report['unmaintained'])}:", _unmaintained_lines(report)
+    )
+    _print_section(
+        console, f"could not resolve {len(report['unresolved'])}:", _unresolved_lines(report)
+    )
 
     for name, why in report["sources"]["failed"].items():
-        lines.append("")
-        lines.append(f"{name} did not finish: {why}")
+        console.print(f"\n{name} did not finish: {why}")
 
-    return "\n".join(lines)
+    return console.export_text().rstrip() + "\n"
 
 
 def _header(summary: dict) -> list[str]:
     """What the manifest asked for, and what came back.
 
-    Clauses that would read as zero are left out rather than printed, so the
-    line stays about what actually happened.
+    Clauses that would read as zero are left out, so the line stays about what
+    actually happened.
     """
     manifest = f"{summary['requirements']} requirements"
     # A manifest can name the same package twice. Saying so is the only way a
@@ -82,33 +68,84 @@ def _header(summary: dict) -> list[str]:
     return [manifest, resolved]
 
 
-def _ignored_note(report: dict) -> str:
-    """Say when findings were suppressed, so a clean report can be trusted."""
-    count = report["ignored"]["count"]
-    return f" ({count} ignored)" if count else ""
+def _print_findings(console: Console, report: dict) -> None:
+    """The headline counts, then a table per vulnerable package."""
+    summary = report["summary"]
+    ignored = ""
+    if report["ignored"]["count"]:
+        ignored = f" ({report['ignored']['count']} ignored)"
 
+    if not report["findings"]:
+        console.print(f"\nno known vulnerabilities{ignored}")
+        return
 
-def _upgrade_note(finding: dict) -> str:
-    """What to upgrade to, or that nothing available fixes everything."""
-    if finding["upgrade_to"]:
-        return f", to at least {finding['upgrade_to']}"
-    return " (no version clears every finding)"
-
-
-def _render_finding(finding: dict) -> list[str]:
-    how = "direct" if finding["direct"] else "via " + " -> ".join(finding["path"][:-1])
-    lines = [
-        "",
-        f"{finding['package']} {finding['version']}  ({how})",
-        f"  {finding['remediation']}{_upgrade_note(finding)}",
-    ]
-    for vulnerability in finding["vulnerabilities"]:
-        fixed = ", ".join(vulnerability["fixed_versions"]) or "no fix published"
-        lines.append(
-            f"  [{vulnerability['severity']:8}] {vulnerability['cve'] or vulnerability['id']}"
-            f"  fixed in {fixed}"
+    console.print(
+        f"\n{summary['vulnerable_packages']} vulnerable "
+        f"({summary['vulnerable_percent']}% of packages), "
+        f"{summary['total_vulnerabilities']} findings{ignored}"
+    )
+    console.print("  " + "  ".join(f"{level} {n}" for level, n in summary["by_severity"].items()))
+    if summary["min_severity"]:
+        console.print(
+            f"  showing {summary['min_severity']} and above; {summary['hidden_by_severity']} hidden"
         )
-        if vulnerability["summary"]:
-            lines.append(f"{'':13}{vulnerability['summary']}")
-        lines.append(f"{'':13}{vulnerability['url']}")
-    return lines
+
+    for finding in report["findings"]:
+        console.print()
+        console.print(_title(finding))
+        console.print(_table(finding))
+
+
+def _title(finding: dict) -> str:
+    """Which package, how it got here, and what to do about it."""
+    how = "direct" if finding["direct"] else "via " + " -> ".join(finding["path"][:-1])
+    fix = (
+        f", to at least {finding['upgrade_to']}"
+        if finding["upgrade_to"]
+        else " (no version clears every finding)"
+    )
+    return f"{finding['package']} {finding['version']}  ({how})\n  {finding['remediation']}{fix}"
+
+
+def _table(finding: dict) -> Table:
+    """One row per vulnerability. Only the summary column wraps."""
+    table = Table(box=SIMPLE, show_edge=False, pad_edge=False, expand=True)
+    table.add_column("severity", style="bold", no_wrap=True)
+    table.add_column("advisory", no_wrap=True)
+    table.add_column("fixed in", no_wrap=True)
+    table.add_column("summary", ratio=1)
+
+    for vulnerability in finding["vulnerabilities"]:
+        table.add_row(
+            vulnerability["severity"],
+            # The advisory page as a link on the identifier: terminals that
+            # support it make this clickable, and the plain text stays the id.
+            Text(vulnerability["cve"] or vulnerability["id"], style=f"link {vulnerability['url']}"),
+            ", ".join(vulnerability["fixed_versions"]) or "no fix published",
+            vulnerability["summary"],
+        )
+    return table
+
+
+def _print_section(console: Console, heading: str, lines: list[str]) -> None:
+    """A heading and its indented lines, or nothing when there are none."""
+    if not lines:
+        return
+    console.print(f"\n{heading}")
+    for line in lines:
+        console.print(f"  {line}")
+
+
+def _skipped_lines(report: dict) -> list[str]:
+    return [f"line {x['line']}: {x['content']}  ({x['reason']})" for x in report["skipped"]]
+
+
+def _unmaintained_lines(report: dict) -> list[str]:
+    return [
+        f"{x['package']}: no release in {x['days_since_release']} days"
+        for x in report["unmaintained"]
+    ]
+
+
+def _unresolved_lines(report: dict) -> list[str]:
+    return [f"{x['package']}: {x['reason']}" for x in report["unresolved"]]
