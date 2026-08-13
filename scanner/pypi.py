@@ -35,12 +35,18 @@ class PyPIClient:
 
         published = _last_release(page)
         latest = page["info"]["version"]
-        if spec.contains(latest, prereleases=True):
-            return FetchResult(latest, _requirements(page), last_release=published)
 
+        # Every version goes through the same selection, rather than testing
+        # `latest` separately: SpecifierSet.contains() matches prereleases where
+        # filter() does not, so two paths would answer differently for an rc.
         version = _best_match(page.get("releases", {}), spec)
         if version is None:
             return FetchResult(error=f"no release satisfies {spec} (latest is {latest})")
+
+        # The page we already have describes the latest release, so choosing it
+        # costs nothing more.
+        if version == latest:
+            return FetchResult(latest, _requirements(page), last_release=published)
 
         pinned, error = self._get(f"{BASE_URL}/{name}/{version}/json")
         if error or pinned is None:
@@ -129,5 +135,9 @@ def _best_match(releases: dict[str, object], spec: SpecifierSet) -> str | None:
             versions.append(Version(raw))
         except InvalidVersion:
             continue
-    matching = list(spec.filter(versions, prereleases=True))
+    # filter() leaves prereleases out unless the specifier names one, and falls
+    # back to them when a project has never shipped anything else. That is what
+    # pip does, and picking an rc the user does not have would mean reporting
+    # vulnerabilities they do not have.
+    matching = list(spec.filter(versions))
     return str(max(matching)) if matching else None

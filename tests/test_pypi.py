@@ -298,3 +298,60 @@ def test_a_missing_package_still_says_it_does_not_exist() -> None:
     """A package that is not on PyPI has no latest version to name."""
     client, _ = client_for({})
     assert client.fetch("nope", SpecifierSet("==1.0")).error == NOT_ON_PYPI
+
+
+# --- prereleases -----------------------------------------------------------
+
+
+def test_the_latest_being_a_prerelease_does_not_make_it_the_answer() -> None:
+    """PyPI reports the newest upload, which is sometimes an rc. pip will not
+    install it for `flask>=2.0`, so neither should we - reporting CVEs against
+    a version the user does not have is worse than reporting nothing."""
+    client, _ = client_for(
+        {
+            "https://pypi.org/pypi/flask/json": package_page(
+                "3.0.0rc1", [], ["2.0", "2.3.0", "3.0.0rc1"]
+            ),
+            "https://pypi.org/pypi/flask/2.3.0/json": package_page("2.3.0", [], []),
+        }
+    )
+
+    result = client.fetch("flask", SpecifierSet(">=2.0"))
+
+    assert result.version == "2.3.0"
+
+
+def test_a_prerelease_is_not_picked_out_of_the_release_list_either() -> None:
+    """The other path: the latest does not satisfy, so we search the releases."""
+    client, _ = client_for(
+        {
+            "https://pypi.org/pypi/flask/json": package_page("1.0", [], ["1.0", "2.0", "3.0.0rc1"]),
+            "https://pypi.org/pypi/flask/2.0/json": package_page("2.0", [], []),
+        }
+    )
+
+    assert client.fetch("flask", SpecifierSet(">=2.0")).version == "2.0"
+
+
+def test_a_pin_on_a_prerelease_still_resolves() -> None:
+    """PEP 440: asking for one explicitly is consent."""
+    client, _ = client_for(
+        {
+            "https://pypi.org/pypi/flask/json": package_page("2.3.0", [], ["2.3.0", "3.0.0rc1"]),
+            "https://pypi.org/pypi/flask/3.0.0rc1/json": package_page("3.0.0rc1", [], []),
+        }
+    )
+
+    assert client.fetch("flask", SpecifierSet("==3.0.0rc1")).version == "3.0.0rc1"
+
+
+def test_a_project_with_only_prereleases_still_resolves() -> None:
+    """Nothing else to offer, so offering it beats saying no release satisfies."""
+    client, _ = client_for(
+        {
+            "https://pypi.org/pypi/new-thing/json": package_page("1.0.0b1", [], ["1.0.0b1"]),
+            "https://pypi.org/pypi/new-thing/1.0.0b1/json": package_page("1.0.0b1", [], []),
+        }
+    )
+
+    assert client.fetch("new-thing", SpecifierSet(">=0")).version == "1.0.0b1"
