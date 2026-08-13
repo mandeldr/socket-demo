@@ -11,6 +11,8 @@ from scanner.models import PackageKey
 
 @dataclass
 class GraphNode:
+    """One package in the resolved tree, and how we got to it."""
+
     key: PackageKey
     depth: int
     children: list[PackageKey] = field(default_factory=list)
@@ -27,12 +29,20 @@ class GraphNode:
 
 @dataclass
 class ResolutionError:
+    """A package the walk could not settle on, and why."""
+
     package: str
     error: str
 
 
 @dataclass
 class DependencyGraph:
+    """Every package a manifest installs, and what asked for each one.
+
+    `nodes` is keyed by package, so it doubles as the set of things already
+    resolved - which is what stops the walk revisiting a cycle.
+    """
+
     nodes: dict[PackageKey, GraphNode] = field(default_factory=dict)
     roots: list[PackageKey] = field(default_factory=list)
     errors: list[ResolutionError] = field(default_factory=list)
@@ -45,11 +55,18 @@ class DependencyGraph:
         failed: bool = False,
         last_release: datetime | None = None,
     ) -> None:
+        """Add a package to the graph, replacing any earlier entry for it."""
         self.nodes[key] = GraphNode(
             key, depth, parent=parent, failed=failed, last_release=last_release
         )
 
     def add_edge(self, parent: PackageKey, child: PackageKey) -> None:
+        """Record that `parent` requires `child`.
+
+        Does nothing if the parent is not in the graph yet. The walk always
+        adds a package before recording what it requires, so that cannot
+        happen from `resolve` - but a hand-built graph should not raise.
+        """
         node = self.nodes.get(parent)
         if node and child not in node.children:
             node.children.append(child)

@@ -378,3 +378,42 @@ def test_extras_do_not_change_the_resolved_version() -> None:
 
     celery = [n for n in graph.nodes.values() if n.key.name == "celery"]
     assert len(celery) == 1
+
+
+def test_an_extra_asked_for_after_the_package_is_resolved_still_counts() -> None:
+    """One package wants plain celery, another wants celery[redis]. Whichever
+    arrives first, redis is installed - so both have to be honoured."""
+
+    def fetch(name: str, spec, extras=frozenset()) -> FetchResult:
+        table = {
+            "a": ["celery"],
+            "b": ["celery[redis]"],
+            "celery": ["redis"] if "redis" in extras else [],
+            "redis": [],
+        }
+        if name not in table:
+            return FetchResult(error="no such package on PyPI")
+        return FetchResult("1.0", [Requirement(r) for r in table[name]])
+
+    graph = resolve(direct("a", "b"), fetch)
+
+    assert "redis" in {n.key.name for n in graph.nodes.values()}
+
+
+def test_the_extra_is_honoured_whichever_order_it_arrives_in() -> None:
+    """The mirror case: the extra is seen first, the plain request second."""
+
+    def fetch(name: str, spec, extras=frozenset()) -> FetchResult:
+        table = {
+            "a": ["celery[redis]"],
+            "b": ["celery"],
+            "celery": ["redis"] if "redis" in extras else [],
+            "redis": [],
+        }
+        if name not in table:
+            return FetchResult(error="no such package on PyPI")
+        return FetchResult("1.0", [Requirement(r) for r in table[name]])
+
+    graph = resolve(direct("a", "b"), fetch)
+
+    assert "redis" in {n.key.name for n in graph.nodes.values()}

@@ -30,8 +30,8 @@ def make_session(
     not a failure, so it is not retried.
 
     `methods` defaults to GET only, because retrying a POST can repeat a side
-    effect the server already applied. A caller whose POST is a pure query -
-    OSV's batch lookup, for instance - can safely opt in.
+    effect the server already applied. A caller whose POST only asks a question
+    and changes nothing - OSV's lookup endpoint - can safely opt in.
     """
     retry = Retry(
         total=retries,

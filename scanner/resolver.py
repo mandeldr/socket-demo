@@ -1,3 +1,10 @@
+"""Working out the full set of packages a manifest installs.
+
+The manifest names a handful; those need others, which need others again. This
+walks that outward from the manifest, asking a registry what each package
+resolves to and what it in turn requires, until nothing new is left to look up.
+"""
+
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -39,7 +46,7 @@ class FetchResult:
 Fetch = Callable[[str, SpecifierSet, frozenset[str]], FetchResult]
 
 
-def _needs(metadata: FetchResult) -> list[tuple[str, SpecifierSet, frozenset[str]]]:
+def _required_packages(metadata: FetchResult) -> list[tuple[str, SpecifierSet, frozenset[str]]]:
     """What a package requires, one entry per required package.
 
     A package can name the same requirement more than once under different
@@ -56,7 +63,7 @@ def _needs(metadata: FetchResult) -> list[tuple[str, SpecifierSet, frozenset[str
     return [(name, spec, extras[name]) for name, spec in specs.items()]
 
 
-def _record(graph: DependencyGraph, parent: PackageKey | None, key: PackageKey) -> None:
+def _record_edge(graph: DependencyGraph, parent: PackageKey | None, key: PackageKey) -> None:
     """Note how we arrived at a package.
 
     Every requester gets an edge, including ones that arrive after the package
@@ -107,42 +114,56 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
         for dep in direct
     )
 
-    # What has been asked of each package, and what we settled on.
-    asked: dict[str, SpecifierSet] = {}
-    wanted: dict[str, frozenset[str]] = {}
-    chosen: dict[str, PackageKey] = {}
+    # Everything asked of each package so far, and what we settled on. A
+    # package is looked up once, against all of it.
+    constraints: dict[str, SpecifierSet] = {}
+    requested_extras: dict[str, frozenset[str]] = {}
+    resolved: dict[str, PackageKey] = {}
 
     while queue:
         name, spec, extras, depth, parent = queue.popleft()
 
-        combined = asked.get(name, SpecifierSet()) & spec
-        asked[name] = combined
-        previous_extras = wanted.get(name, frozenset())
-        all_extras = previous_extras | extras
-        wanted[name] = all_extras
+        combined = constraints.get(name, SpecifierSet()) & spec
+        constraints[name] = combined
 
-        settled = chosen.get(name)
+        extras_before = requested_extras.get(name, frozenset())
+        all_extras = extras_before | extras
+        requested_extras[name] = all_extras
+
+        settled = resolved.get(name)
         if settled is not None:
             # Already resolved. If the version still satisfies what is now
             # being asked, record the edge and move on; otherwise say the
             # constraints disagree rather than quietly carrying two versions.
             if settled.version and not combined.contains(settled.version):
                 graph.errors.append(ResolutionError(name, f"conflicting constraints: {combined}"))
-            _record(graph, parent, settled)
+
+            # An extra asked for after the package was resolved adds
+            # requirements without changing the version - one thing may want
+            # plain celery and another celery[redis] - so the answer grows
+            # rather than being resolved again.
+            node = graph.nodes.get(settled)
+            if all_extras > extras_before and node is not None and not node.failed:
+                for required, constraint, wants in _required_packages(
+                    fetch(name, combined, all_extras)
+                ):
+                    queue.append(_Lookup(required, constraint, wants, depth + 1, settled))
+
+            _record_edge(graph, parent, settled)
             continue
 
         if combined.is_unsatisfiable():
             key = PackageKey(name, None, EcoSystem.PYTHON)
-            chosen[name] = key
-            _record(graph, parent, key)
+            resolved[name] = key
+            _record_edge(graph, parent, key)
             graph.add_node(key, depth, parent=parent, failed=True)
             graph.errors.append(ResolutionError(name, f"conflicting constraints: {combined}"))
             continue
 
         metadata = fetch(name, combined, all_extras)
         key = PackageKey(name, metadata.version, EcoSystem.PYTHON)
-        chosen[name] = key
-        _record(graph, parent, key)
+        resolved[name] = key
+        _record_edge(graph, parent, key)
 
         graph.add_node(
             key,
@@ -155,7 +176,7 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
             graph.errors.append(ResolutionError(name, metadata.error or "unknown error"))
             continue
 
-        for required, constraint, wants in _needs(metadata):
+        for required, constraint, wants in _required_packages(metadata):
             queue.append(_Lookup(required, constraint, wants, depth + 1, key))
 
     return graph

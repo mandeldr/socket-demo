@@ -137,10 +137,12 @@ def _print_section(console: Console, heading: str, lines: list[str]) -> None:
 
 
 def _skipped_lines(report: dict) -> list[str]:
+    """Manifest lines the scan did not read, with the reason."""
     return [f"line {x['line']}: {x['content']}  ({x['reason']})" for x in report["skipped"]]
 
 
 def _unmaintained_lines(report: dict) -> list[str]:
+    """Packages with no recent release, worst first."""
     return [
         f"{x['package']}: no release in {x['days_since_release']} days"
         for x in report["unmaintained"]
@@ -148,4 +150,5 @@ def _unmaintained_lines(report: dict) -> list[str]:
 
 
 def _unresolved_lines(report: dict) -> list[str]:
+    """Packages the resolver could not settle on, with the reason."""
     return [f"{x['package']}: {x['reason']}" for x in report["unresolved"]]

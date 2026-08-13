@@ -1,3 +1,10 @@
+"""Reading a manifest into the requirements it asks for.
+
+Lines that are not requirements - pip options, editable installs, VCS and URL
+references - are recorded with a reason rather than dropped, so the report can
+say what it did not read.
+"""
+
 import re
 from collections.abc import Iterator
 from itertools import takewhile

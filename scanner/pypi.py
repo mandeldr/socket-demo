@@ -78,7 +78,7 @@ class PyPIClient:
         return result
 
 
-def _wanted(requirement: Requirement, extras: frozenset[str]) -> bool:
+def _is_installed(requirement: Requirement, extras: frozenset[str]) -> bool:
     """Whether this requirement is installed, given the extras asked for.
 
     An `extra == "redis"` marker means "only when redis was requested", so it
@@ -113,6 +113,7 @@ def _last_release(page: dict) -> datetime | None:
 
 
 def _parse_time(raw: str | None) -> datetime | None:
+    """An upload timestamp, or None if PyPI wrote something unreadable."""
     if not raw:
         return None
     try:
@@ -140,7 +141,7 @@ def _requirements(page: dict, extras: frozenset[str] = frozenset()) -> list[Requ
         except InvalidRequirement:
             continue
 
-        if not _wanted(requirement, extras):
+        if not _is_installed(requirement, extras):
             continue
 
         parsed.append(requirement)

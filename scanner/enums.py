@@ -1,3 +1,9 @@
+"""Fixed vocabularies, so the strings that matter exist in one place.
+
+Two of these carry values other systems care about - OSV spells the Python
+ecosystem `PyPI`, exactly - and one is written for a person to read.
+"""
+
 from enum import Enum
 
 
