@@ -5,6 +5,7 @@ Everything worth saying about a scan ends up in one dictionary: it is what
 Building it once means the two cannot disagree.
 """
 
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,8 +32,13 @@ def build(
     resolved = [node for node in graph.nodes.values() if not node.failed]
 
     parsed = parsed or ParseResult()
-    kept, ignored_count = _apply_ignore_list(findings, ignore or [])
-    shown, hidden_count = _apply_severity_filter(kept, min_severity)
+    rules = {rule.strip().upper() for rule in ignore or []}
+    kept, ignored_count = _filter(findings, lambda v: not _ignored(v, rules))
+
+    shown, hidden_count = kept, 0
+    if min_severity:
+        threshold = SEVERITY_ORDER.index(min_severity.strip().upper())
+        shown, hidden_count = _filter(kept, lambda v: _serious_enough(v, threshold))
 
     return {
         "manifest": str(manifest),
@@ -69,23 +75,21 @@ def build(
     }
 
 
-def _apply_ignore_list(
-    findings: dict[PackageKey, list[Vulnerability]], ignore: list[str]
+def _filter(
+    findings: dict[PackageKey, list[Vulnerability]],
+    keep: Callable[[Vulnerability], bool],
 ) -> tuple[dict[PackageKey, list[Vulnerability]], int]:
-    """Drop advisories the user has already decided about.
+    """Drop the findings `keep` rejects, and count how many went.
 
-    Matching is on any identifier a record carries, so a rule can name either
-    the CVE a person read in the output or the GHSA id a tool emitted.
+    Both the ignore list and the severity filter want the same thing: run a
+    test over every finding, forget the packages left with nothing, and say how
+    much was dropped so the report can admit to it.
     """
-    if not ignore:
-        return findings, 0
-
-    rules = {rule.strip().upper() for rule in ignore}
     kept: dict[PackageKey, list[Vulnerability]] = {}
     dropped = 0
 
     for package, vulnerabilities in findings.items():
-        remaining = [v for v in vulnerabilities if not _matches(v, rules)]
+        remaining = [v for v in vulnerabilities if keep(v)]
         dropped += len(vulnerabilities) - len(remaining)
         if remaining:
             kept[package] = remaining
@@ -93,39 +97,25 @@ def _apply_ignore_list(
     return kept, dropped
 
 
-def _apply_severity_filter(
-    findings: dict[PackageKey, list[Vulnerability]], min_severity: str | None
-) -> tuple[dict[PackageKey, list[Vulnerability]], int]:
-    """Show only what is at least this serious.
+def _ignored(vulnerability: Vulnerability, rules: set[str]) -> bool:
+    """Whether the user has already decided about this one.
 
-    UNKNOWN always survives. It sorts last, so a plain rank comparison would
-    drop it, but unknown means we could not work the severity out rather than
-    that it does not matter. Hiding those would be the tool covering up its own
-    blind spot.
+    A rule can name either the CVE a person read in the output or the GHSA id
+    a tool emitted, so every identifier the record carries is checked.
     """
-    if not min_severity:
-        return findings, 0
-
-    threshold = SEVERITY_ORDER.index(min_severity.strip().upper())
-    shown: dict[PackageKey, list[Vulnerability]] = {}
-    hidden = 0
-
-    for package, vulnerabilities in findings.items():
-        keep = [
-            v
-            for v in vulnerabilities
-            if v.severity == UNKNOWN_SEVERITY or _severity_rank(v) <= threshold
-        ]
-        hidden += len(vulnerabilities) - len(keep)
-        if keep:
-            shown[package] = keep
-
-    return shown, hidden
-
-
-def _matches(vulnerability: Vulnerability, rules: set[str]) -> bool:
     names = {vulnerability.id.upper()} | {alias.upper() for alias in vulnerability.aliases}
     return bool(names & rules)
+
+
+def _serious_enough(vulnerability: Vulnerability, threshold: int) -> bool:
+    """Whether this is at least as serious as the level asked for.
+
+    UNKNOWN always passes. It sorts last, so a plain rank comparison would drop
+    it, but unknown means we could not work the severity out rather than that
+    it does not matter. Hiding those would be the tool covering up its own
+    blind spot.
+    """
+    return vulnerability.severity == UNKNOWN_SEVERITY or _rank(vulnerability) <= threshold
 
 
 def _summary(
@@ -279,23 +269,20 @@ def _remediation(package: PackageKey, graph: DependencyGraph) -> str:
     return f"upgrade {', '.join(dependents)}, which {verb} {package.name}"
 
 
-def _severity_rank(vulnerability: Vulnerability) -> int:
+def _rank(vulnerability: Vulnerability) -> int:
     """Position in SEVERITY_ORDER, so the worst sorts first."""
     return SEVERITY_ORDER.index(vulnerability.severity)
 
 
 def _order(vulnerability: Vulnerability) -> tuple[int, str]:
-    """Worst first, then by identifier so two runs print the same order.
+    """Worst first, then by identifier.
 
-    Without the second half the order follows whatever the services happened
-    to return, and the output cannot be diffed between runs.
+    The identifier half is what makes two runs of the same scan print the same
+    order, so the output can be diffed.
     """
-    return (_severity_rank(vulnerability), cve_of(vulnerability) or vulnerability.id)
+    return (_rank(vulnerability), cve_of(vulnerability) or vulnerability.id)
 
 
 def _worst_first(findings: dict[PackageKey, list[Vulnerability]]) -> list[tuple]:
-    """Packages ordered by their most serious vulnerability, then by name."""
-    return sorted(
-        findings.items(),
-        key=lambda item: (min(_severity_rank(v) for v in item[1]), item[0].name),
-    )
+    """Packages ordered by their most serious finding, then by name."""
+    return sorted(findings.items(), key=lambda kv: (min(_rank(v) for v in kv[1]), kv[0].name))
