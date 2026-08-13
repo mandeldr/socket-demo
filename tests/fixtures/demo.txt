@@ -1,0 +1,6 @@
+# Small enough to step through in a debugger, and still shows the two
+# things worth watching: urllib3 is pinned here AND required by requests,
+# so the resolver has to combine those constraints rather than resolve
+# twice; and the version pinned has known vulnerabilities.
+requests==2.31.0
+urllib3==2.2.1
