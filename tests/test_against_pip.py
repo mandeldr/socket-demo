@@ -10,6 +10,7 @@ Needs the network and a few seconds, so it is deselected by default:
     pytest -m network
 """
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -35,12 +36,12 @@ def what_uv_would_install(manifest: Path) -> dict[str, str]:
     if result.returncode != 0:
         pytest.skip(f"uv could not resolve the fixture: {result.stderr.strip()[:200]}")
 
-    pinned = {}
+    pinned: dict[str, str] = {}
     for line in result.stdout.splitlines():
         line = line.split("#")[0].strip()
         if "==" in line:
             name, _, version = line.partition("==")
-            pinned[canonicalize_name(name.strip())] = version.strip()
+            pinned[str(canonicalize_name(name.strip()))] = version.strip()
     return pinned
 
 
@@ -55,15 +56,9 @@ def what_we_resolve(manifest: Path) -> dict[str, set[str | None]]:
 
 @pytest.fixture(scope="module")
 def comparison() -> tuple[dict, dict]:
-    if not shutil_which("uv"):
+    if shutil.which("uv") is None:
         pytest.skip("uv is not installed")
     return what_uv_would_install(FIXTURE), what_we_resolve(FIXTURE)
-
-
-def shutil_which(name: str) -> str | None:
-    import shutil
-
-    return shutil.which(name)
 
 
 def test_we_miss_nothing_uv_would_install(comparison) -> None:
