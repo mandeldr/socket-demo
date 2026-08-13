@@ -63,6 +63,17 @@ def _required_packages(metadata: FetchResult) -> list[tuple[str, SpecifierSet, f
     return [(name, spec, extras[name]) for name, spec in specs.items()]
 
 
+def _queue_requirements(
+    queue: deque,
+    metadata: FetchResult,
+    depth: int,
+    requester: PackageKey,
+) -> None:
+    """Line up everything this package needs, to be looked up in turn."""
+    for name, constraint, extras in _required_packages(metadata):
+        queue.append(_Lookup(name, constraint, extras, depth + 1, requester))
+
+
 def _record_edge(graph: DependencyGraph, parent: PackageKey | None, key: PackageKey) -> None:
     """Note how we arrived at a package.
 
@@ -123,48 +134,41 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
     while queue:
         name, spec, extras, depth, parent = queue.popleft()
 
-        combined = constraints.get(name, SpecifierSet()) & spec
-        constraints[name] = combined
-
-        extras_before = requested_extras.get(name, frozenset())
-        all_extras = extras_before | extras
-        requested_extras[name] = all_extras
+        # Fold this request into everything already asked of the package, so it
+        # is looked up once against all of it rather than once per requester.
+        constraint = constraints[name] = constraints.get(name, SpecifierSet()) & spec
+        asked_before = requested_extras.get(name, frozenset())
+        all_extras = requested_extras[name] = asked_before | extras
 
         settled = resolved.get(name)
         if settled is not None:
-            # Already resolved. If the version still satisfies what is now
-            # being asked, record the edge and move on; otherwise say the
-            # constraints disagree rather than quietly carrying two versions.
-            if settled.version and not combined.contains(settled.version):
-                graph.errors.append(ResolutionError(name, f"conflicting constraints: {combined}"))
-
-            # An extra asked for after the package was resolved adds
-            # requirements without changing the version - one thing may want
-            # plain celery and another celery[redis] - so the answer grows
-            # rather than being resolved again.
-            node = graph.nodes.get(settled)
-            if all_extras > extras_before and node is not None and not node.failed:
-                for required, constraint, wants in _required_packages(
-                    fetch(name, combined, all_extras)
-                ):
-                    queue.append(_Lookup(required, constraint, wants, depth + 1, settled))
-
             _record_edge(graph, parent, settled)
+
+            if settled.version and not constraint.contains(settled.version):
+                # Something now wants a version we have already ruled out. Say
+                # so, rather than quietly carrying the package twice.
+                graph.errors.append(ResolutionError(name, f"conflicting constraints: {constraint}"))
+
+            if all_extras > asked_before:
+                # A newly requested extra adds requirements without changing
+                # the version, so the answer grows instead of being redone.
+                _queue_requirements(queue, fetch(name, constraint, all_extras), depth, settled)
             continue
 
-        if combined.is_unsatisfiable():
+        if constraint.is_unsatisfiable():
+            # No version can satisfy all of it - `<=0.7.1` beside `==1.5.0`.
+            # Record the package so the report can name it, and move on.
             key = PackageKey(name, None, EcoSystem.PYTHON)
             resolved[name] = key
             _record_edge(graph, parent, key)
             graph.add_node(key, depth, parent=parent, failed=True)
-            graph.errors.append(ResolutionError(name, f"conflicting constraints: {combined}"))
+            graph.errors.append(ResolutionError(name, f"conflicting constraints: {constraint}"))
             continue
 
-        metadata = fetch(name, combined, all_extras)
+        metadata = fetch(name, constraint, all_extras)
         key = PackageKey(name, metadata.version, EcoSystem.PYTHON)
         resolved[name] = key
         _record_edge(graph, parent, key)
-
         graph.add_node(
             key,
             depth,
@@ -172,11 +176,10 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
             failed=not metadata.ok,
             last_release=metadata.last_release,
         )
-        if not metadata.ok:
-            graph.errors.append(ResolutionError(name, metadata.error or "unknown error"))
-            continue
 
-        for required, constraint, wants in _required_packages(metadata):
-            queue.append(_Lookup(required, constraint, wants, depth + 1, key))
+        if metadata.ok:
+            _queue_requirements(queue, metadata, depth, key)
+        else:
+            graph.errors.append(ResolutionError(name, metadata.error or "unknown error"))
 
     return graph
