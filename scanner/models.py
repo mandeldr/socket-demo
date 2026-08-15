@@ -6,7 +6,6 @@ what an advisory database said about it.
 """
 
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from packaging.utils import canonicalize_name
 
@@ -58,7 +57,6 @@ class SkippedLine:
     line_number: int
     content: str
     reason: SkipReason
-    source: Path | None = None
 
 
 @dataclass
