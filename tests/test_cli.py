@@ -15,7 +15,7 @@ from packaging.requirements import Requirement
 from scanner.cli import EXIT_OK, EXIT_USAGE_ERROR, EXIT_VULNERABILITIES_FOUND, build_parser, main
 from scanner.enums import Source
 from scanner.models import Vulnerability
-from scanner.resolver import FetchResult
+from scanner.resolver import PackageMetadata
 from scanner.sources import QueryResult
 
 INDEX = {
@@ -27,10 +27,10 @@ INDEX = {
 class FakeClient:
     """Stands in for PyPIClient. Serves INDEX and knows nothing else."""
 
-    def fetch(self, name: str, spec, extras=frozenset()) -> FetchResult:
+    def fetch(self, name: str, spec, extras=frozenset()) -> PackageMetadata:
         if name not in INDEX:
-            return FetchResult(error="no such package on PyPI")
-        return FetchResult(
+            return PackageMetadata(error="no such package on PyPI")
+        return PackageMetadata(
             "1.0",
             [Requirement(r) for r in INDEX[name]],
             last_release=datetime.now(timezone.utc) - timedelta(days=900),

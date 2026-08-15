@@ -11,7 +11,7 @@ from packaging.version import Version
 
 from scanner.enums import EcoSystem
 from scanner.models import Dependency, PackageKey
-from scanner.resolver import FetchResult, resolve
+from scanner.resolver import PackageMetadata, resolve
 
 
 def key(name: str, version: str | None = "1.0") -> PackageKey:
@@ -30,14 +30,14 @@ def versioned_index(index: dict[str, list[str]], versions: dict[str, list[str]])
     observable.
     """
 
-    def fetch(name: str, spec, _extras=frozenset()) -> FetchResult:
+    def fetch(name: str, spec, _extras=frozenset()) -> PackageMetadata:
         if name not in index:
-            return FetchResult(error="no such package on PyPI")
+            return PackageMetadata(error="no such package on PyPI")
         available = [Version(v) for v in versions.get(name, ["1.0"])]
         matching = list(spec.filter(available))
         if not matching:
-            return FetchResult(error=f"no release satisfies {spec}")
-        return FetchResult(str(max(matching)), [Requirement(r) for r in index[name]])
+            return PackageMetadata(error=f"no release satisfies {spec}")
+        return PackageMetadata(str(max(matching)), [Requirement(r) for r in index[name]])
 
     return fetch
 
@@ -45,10 +45,10 @@ def versioned_index(index: dict[str, list[str]], versions: dict[str, list[str]])
 def fake_index(index: dict[str, list[str]]):
     """Build a fetch function from {package: [requirement strings]}."""
 
-    def fetch(name: str, _spec, _extras=frozenset()) -> FetchResult:
+    def fetch(name: str, _spec, _extras=frozenset()) -> PackageMetadata:
         if name not in index:
-            return FetchResult(error="no such package on PyPI")
-        return FetchResult("1.0", [Requirement(r) for r in index[name]])
+            return PackageMetadata(error="no such package on PyPI")
+        return PackageMetadata("1.0", [Requirement(r) for r in index[name]])
 
     return fetch
 
@@ -179,9 +179,9 @@ def test_a_pinned_direct_dependency_keeps_its_version() -> None:
     """The manifest said flask==2.0.0, so latest is the wrong answer."""
     seen: list[str] = []
 
-    def fetch(name: str, spec, _extras=frozenset()) -> FetchResult:
+    def fetch(name: str, spec, _extras=frozenset()) -> PackageMetadata:
         seen.append(str(spec))
-        return FetchResult("2.0.0", [])
+        return PackageMetadata("2.0.0", [])
 
     deps = [Dependency("flask", raw_spec="==2.0.0")]
     resolve(deps, fetch)
@@ -228,8 +228,8 @@ def test_the_last_release_date_reaches_the_graph() -> None:
     """The report needs it to spot packages nobody has touched in years."""
     published = datetime(2019, 1, 1, tzinfo=timezone.utc)
 
-    def fetch(name: str, _spec, _extras=frozenset()) -> FetchResult:
-        return FetchResult("1.0", [], last_release=published)
+    def fetch(name: str, _spec, _extras=frozenset()) -> PackageMetadata:
+        return PackageMetadata("1.0", [], last_release=published)
 
     graph = resolve(direct("abandoned"), fetch)
 
@@ -322,7 +322,7 @@ def test_a_package_appears_once_however_many_things_need_it() -> None:
 def extras_index():
     """A fake PyPI where celery's redis requirement is behind an extra."""
 
-    def fetch(name: str, spec, extras=frozenset()) -> FetchResult:
+    def fetch(name: str, spec, extras=frozenset()) -> PackageMetadata:
         table = {
             "celery": ["billiard>=4.2.0"] + (["redis>=4.5.2"] if "redis" in extras else []),
             "billiard": [],
@@ -330,8 +330,8 @@ def extras_index():
             "app": [],
         }
         if name not in table:
-            return FetchResult(error="no such package on PyPI")
-        return FetchResult("1.0", [Requirement(r) for r in table[name]])
+            return PackageMetadata(error="no such package on PyPI")
+        return PackageMetadata("1.0", [Requirement(r) for r in table[name]])
 
     return fetch
 
@@ -354,15 +354,15 @@ def test_without_the_extra_that_dependency_is_absent() -> None:
 def test_an_extra_requested_transitively_is_honoured() -> None:
     """A package can ask for another package's extras too."""
 
-    def fetch(name: str, spec, extras=frozenset()) -> FetchResult:
+    def fetch(name: str, spec, extras=frozenset()) -> PackageMetadata:
         table = {
             "app": ["celery[redis]>=1.0"],
             "celery": (["redis>=4.5.2"] if "redis" in extras else []),
             "redis": [],
         }
         if name not in table:
-            return FetchResult(error="no such package on PyPI")
-        return FetchResult("1.0", [Requirement(r) for r in table[name]])
+            return PackageMetadata(error="no such package on PyPI")
+        return PackageMetadata("1.0", [Requirement(r) for r in table[name]])
 
     graph = resolve(direct("app"), fetch)
 
@@ -384,7 +384,7 @@ def test_an_extra_asked_for_after_the_package_is_resolved_still_counts() -> None
     """One package wants plain celery, another wants celery[redis]. Whichever
     arrives first, redis is installed - so both have to be honoured."""
 
-    def fetch(name: str, spec, extras=frozenset()) -> FetchResult:
+    def fetch(name: str, spec, extras=frozenset()) -> PackageMetadata:
         table = {
             "a": ["celery"],
             "b": ["celery[redis]"],
@@ -392,8 +392,8 @@ def test_an_extra_asked_for_after_the_package_is_resolved_still_counts() -> None
             "redis": [],
         }
         if name not in table:
-            return FetchResult(error="no such package on PyPI")
-        return FetchResult("1.0", [Requirement(r) for r in table[name]])
+            return PackageMetadata(error="no such package on PyPI")
+        return PackageMetadata("1.0", [Requirement(r) for r in table[name]])
 
     graph = resolve(direct("a", "b"), fetch)
 
@@ -403,7 +403,7 @@ def test_an_extra_asked_for_after_the_package_is_resolved_still_counts() -> None
 def test_the_extra_is_honoured_whichever_order_it_arrives_in() -> None:
     """The mirror case: the extra is seen first, the plain request second."""
 
-    def fetch(name: str, spec, extras=frozenset()) -> FetchResult:
+    def fetch(name: str, spec, extras=frozenset()) -> PackageMetadata:
         table = {
             "a": ["celery[redis]"],
             "b": ["celery"],
@@ -411,8 +411,8 @@ def test_the_extra_is_honoured_whichever_order_it_arrives_in() -> None:
             "redis": [],
         }
         if name not in table:
-            return FetchResult(error="no such package on PyPI")
-        return FetchResult("1.0", [Requirement(r) for r in table[name]])
+            return PackageMetadata(error="no such package on PyPI")
+        return PackageMetadata("1.0", [Requirement(r) for r in table[name]])
 
     graph = resolve(direct("a", "b"), fetch)
 

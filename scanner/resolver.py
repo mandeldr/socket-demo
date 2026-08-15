@@ -21,8 +21,8 @@ from scanner.models import Dependency, PackageKey
 
 
 @dataclass
-class FetchResult:
-    """What a metadata lookup produced, or why it did not.
+class PackageMetadata:
+    """What a registry knows about one package, or why we could not find out.
 
     Carrying the reason rather than just None means the report can tell a user
     the difference between "that package does not exist" and "no release of it
@@ -43,10 +43,10 @@ class FetchResult:
 
 # Given a package name, the constraint on it, and any optional feature sets
 # asked for, look up the version to use and what it requires.
-Fetch = Callable[[str, SpecifierSet, frozenset[str]], FetchResult]
+Fetch = Callable[[str, SpecifierSet, frozenset[str]], PackageMetadata]
 
 
-def _required_packages(metadata: FetchResult) -> list[tuple[str, SpecifierSet, frozenset[str]]]:
+def _required_packages(metadata: PackageMetadata) -> list[tuple[str, SpecifierSet, frozenset[str]]]:
     """What a package requires, one entry per required package.
 
     A package can name the same requirement more than once under different
@@ -65,7 +65,7 @@ def _required_packages(metadata: FetchResult) -> list[tuple[str, SpecifierSet, f
 
 def _queue_requirements(
     queue: deque,
-    metadata: FetchResult,
+    metadata: PackageMetadata,
     depth: int,
     requester: PackageKey,
 ) -> None:
@@ -93,6 +93,9 @@ class _Lookup(NamedTuple):
 
     It carries a name and a constraint but no version, because the version is
     what the lookup is for. Once it has one it becomes a PackageKey.
+
+    A NamedTuple rather than a plain tuple so the five values are named and
+    type-checked; the loop unpacks it positionally.
     """
 
     name: str

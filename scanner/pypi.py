@@ -11,7 +11,7 @@ from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from scanner.http import DEFAULT_TIMEOUT, make_session
-from scanner.resolver import FetchResult
+from scanner.resolver import PackageMetadata
 
 BASE_URL = "https://pypi.org/pypi"
 NOT_ON_PYPI = "no such package on PyPI"
@@ -27,13 +27,13 @@ class PyPIClient:
 
     def fetch(
         self, name: str, spec: SpecifierSet, extras: frozenset[str] = frozenset()
-    ) -> FetchResult:
+    ) -> PackageMetadata:
         """Return the version satisfying `spec` and that version's requirements."""
         name = canonicalize_name(name)
 
         page, error = self._get(f"{BASE_URL}/{name}/json")
         if error or page is None:
-            return FetchResult(error=error)
+            return PackageMetadata(error=error)
 
         published = _last_release(page)
         latest = page["info"]["version"]
@@ -43,17 +43,17 @@ class PyPIClient:
         # filter() does not, so two paths would answer differently for an rc.
         version = _best_match(page.get("releases", {}), spec)
         if version is None:
-            return FetchResult(error=f"no release satisfies {spec} (latest is {latest})")
+            return PackageMetadata(error=f"no release satisfies {spec} (latest is {latest})")
 
         # The page we already have describes the latest release, so choosing it
         # costs nothing more.
         if version == latest:
-            return FetchResult(latest, _requirements(page, extras), last_release=published)
+            return PackageMetadata(latest, _requirements(page, extras), last_release=published)
 
         pinned, error = self._get(f"{BASE_URL}/{name}/{version}/json")
         if error or pinned is None:
-            return FetchResult(error=f"metadata for {version} unavailable ({error})")
-        return FetchResult(version, _requirements(pinned, extras), last_release=published)
+            return PackageMetadata(error=f"metadata for {version} unavailable ({error})")
+        return PackageMetadata(version, _requirements(pinned, extras), last_release=published)
 
     def _get(self, url: str) -> tuple[dict | None, str | None]:
         """Fetch and decode a URL. Returns (payload, error); exactly one is set."""
