@@ -398,3 +398,120 @@ def test_the_lock_can_be_given_directly(tmp_path: Path) -> None:
     _, graph = package_lock.parse(tmp_path / "package-lock.json")
 
     assert len(graph.nodes) == 1
+
+
+# --- workspaces ------------------------------------------------------------
+
+
+WORKSPACE_LOCK = {
+    "packages/api": {
+        "name": "@acme/api",
+        "version": "1.0.0",
+        "dependencies": {"express": "4.17.1", "@acme/web": "1.0.0"},
+    },
+    "packages/web": {
+        "name": "@acme/web",
+        "version": "1.0.0",
+        "dependencies": {"minimist": "0.0.8"},
+    },
+    "node_modules/@acme/api": {"link": True, "resolved": "packages/api"},
+    "node_modules/@acme/web": {"link": True, "resolved": "packages/web"},
+    "node_modules/express": {"version": "4.17.1"},
+    "node_modules/minimist": {"version": "0.0.8"},
+}
+
+
+def workspace_project(directory: Path) -> Path:
+    """A monorepo: the root owns lodash, two workspace packages own the rest."""
+    (directory / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "root",
+                "version": "1.0.0",
+                "workspaces": ["packages/*"],
+                "dependencies": {"lodash": "4.17.15"},
+            }
+        )
+    )
+    (directory / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {"dependencies": {"lodash": "4.17.15"}},
+                    "node_modules/lodash": {"version": "4.17.15"},
+                    **WORKSPACE_LOCK,
+                },
+            }
+        )
+    )
+    return directory / "package.json"
+
+
+def test_a_workspace_packages_dependencies_are_scanned(tmp_path: Path) -> None:
+    """The root package.json names only its own dependencies. A workspace
+    package's are reachable solely through its entry, so missing them loses
+    most of a monorepo without anything failing."""
+    _, graph = package_lock.parse(workspace_project(tmp_path))
+
+    assert names_in(graph) >= {"express@4.17.1", "minimist@0.0.8"}
+
+
+def test_a_workspace_package_is_a_direct_dependency(tmp_path: Path) -> None:
+    """`npm ls` lists them beside the root's own dependencies, because that is
+    what they are: code this project ships, not something it pulled in."""
+    _, graph = package_lock.parse(workspace_project(tmp_path))
+
+    assert sorted(k.name for k in graph.roots) == ["@acme/api", "@acme/web", "lodash"]
+
+
+def test_a_workspace_package_is_named_by_its_manifest(tmp_path: Path) -> None:
+    """`packages/api` is where it lives; `@acme/api` is what it is called."""
+    _, graph = package_lock.parse(workspace_project(tmp_path))
+
+    assert "@acme/api@1.0.0" in names_in(graph)
+    assert "api@1.0.0" not in names_in(graph)
+
+
+def test_an_edge_into_a_workspace_package_follows_the_link(tmp_path: Path) -> None:
+    """`@acme/api` requires `@acme/web`, which resolves to a link entry. The
+    link names a directory; the edge has to land on the package there."""
+    _, graph = package_lock.parse(workspace_project(tmp_path))
+    api = next(k for k in graph.nodes if k.name == "@acme/api")
+
+    assert "@acme/web" in [k.name for k in graph.nodes[api].children]
+
+
+def test_a_workspace_path_with_no_node_modules_is_read(tmp_path: Path) -> None:
+    """`packages/api` has no node_modules segment at all, which is the shape
+    that breaks a name-from-the-path split."""
+    _, graph = package_lock.parse(workspace_project(tmp_path))
+
+    assert len([k for k in graph.nodes if k.name.startswith("@acme/")]) == 2
+
+
+def test_a_link_entry_is_not_a_second_copy(tmp_path: Path) -> None:
+    """Each workspace package is listed twice: once as a directory and once as
+    a link into node_modules. It is one package."""
+    _, graph = package_lock.parse(workspace_project(tmp_path))
+
+    assert len([k for k in graph.nodes if k.name == "@acme/api"]) == 1
+
+
+def test_a_link_pointing_nowhere_is_ignored(tmp_path: Path) -> None:
+    manifest = write(
+        tmp_path,
+        {"dependencies": {"a": "1"}},
+        {"node_modules/a": {"link": True, "resolved": "packages/gone"}},
+    )
+
+    _, graph = package_lock.parse(manifest)
+
+    assert graph.nodes == {}
+
+
+def test_a_real_monorepo_matches_what_npm_installs() -> None:
+    _, graph = package_lock.parse(FIXTURES / "monorepo" / "package.json")
+
+    assert len(graph.nodes) == 57
+    assert sorted(k.name for k in graph.roots) == ["@acme/api", "@acme/web", "lodash"]
