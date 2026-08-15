@@ -32,4 +32,5 @@ class SkipReason(Enum):
     EDITABLE = "editable install"
     VCS = "version control reference"
     DIRECT_URL = "direct URL"
+    LOCAL_PATH = "local path reference"
     INVALID = "could not be parsed"
