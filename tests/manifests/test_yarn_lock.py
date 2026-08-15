@@ -312,3 +312,55 @@ def test_a_peer_dependency_of_the_project_is_not_counted(tmp_path: Path) -> None
 
     assert [d.name for d in parsed.dependencies] == ["ms"]
     assert [k.name for k in graph.roots] == ["ms"]
+
+
+def test_a_berry_optional_dependency_is_followed(tmp_path: Path) -> None:
+    """yarn 1 and npm both follow optionalDependencies. Berry writes them in
+    the same place as ordinary ones and installs them, so dropping them here
+    made the same project scan differently depending on which yarn locked it."""
+    lock = """\
+__metadata:
+  version: 10
+
+"a@npm:1.0.0":
+  version: 1.0.0
+  resolution: "a@npm:1.0.0"
+  optionalDependencies:
+    fsevents: "npm:2.3.3"
+
+"fsevents@npm:2.3.3":
+  version: 2.3.3
+  resolution: "fsevents@npm:2.3.3"
+"""
+    _, graph = yarn_lock.parse(project(tmp_path, {"a": "1.0.0"}, lock))
+
+    assert names_in(graph) == {"a@1.0.0", "fsevents@2.3.3"}
+
+
+def test_both_yarn_formats_follow_the_same_fields(tmp_path: Path) -> None:
+    """The same project, locked by either yarn, must produce the same graph."""
+    v1 = (
+        'a@1.0.0:\n  version "1.0.0"\n  optionalDependencies:\n    b "1.0.0"\n\n'
+        'b@1.0.0:\n  version "1.0.0"\n'
+    )
+    berry = """\
+__metadata:
+  version: 10
+
+"a@npm:1.0.0":
+  version: 1.0.0
+  optionalDependencies:
+    b: "npm:1.0.0"
+
+"b@npm:1.0.0":
+  version: 1.0.0
+"""
+    first = tmp_path / "v1"
+    second = tmp_path / "berry"
+    first.mkdir()
+    second.mkdir()
+
+    _, one = yarn_lock.parse(project(first, {"a": "1.0.0"}, v1))
+    _, two = yarn_lock.parse(project(second, {"a": "1.0.0"}, berry))
+
+    assert names_in(one) == names_in(two)

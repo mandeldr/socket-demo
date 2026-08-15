@@ -129,8 +129,10 @@ def _summary(
 ) -> dict:
     """The counts a reader wants before any detail.
 
-    Manifest counts and package counts live together so that they reconcile:
-    requirements minus unresolved is what a reader should see resolved.
+    Manifest counts and package counts live together so a reader can check
+    them against each other: `requirements` is what the file asked for,
+    `packages_requested` how many packages that was, and `total_packages` what
+    they installed once transitives are followed.
     """
     severities: dict[str, int] = {}
     for vulnerabilities in findings.values():
@@ -243,7 +245,12 @@ def _upgrade_target(package: PackageKey, vulnerabilities: list[Vulnerability]) -
 
 
 def _version(raw: str | None) -> Version | None:
-    """Compared as a version, not as text: 1.9.0 is above 1.26.19."""
+    """Parsed so comparisons are by version, not by text.
+
+    As text `"1.9.0" > "1.26.19"` is True, which is backwards - 1.26.19 is the
+    later release. Version() gets that right; None means the string was not a
+    version at all, and the caller drops it.
+    """
     if not raw:
         return None
     try:

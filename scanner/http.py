@@ -25,9 +25,11 @@ def make_session(
 ) -> requests.Session:
     """A session that retries transient failures with exponential backoff.
 
-    urllib3 waits backoff * 2 ** (attempt - 1) seconds between tries, and
-    honours a Retry-After header when the server sends one. A 404 is an answer,
-    not a failure, so it is not retried.
+    urllib3 retries immediately the first time, then waits
+    backoff * 2 ** (n - 1) seconds before each later try - so a backoff of 0.5
+    gives 0s, 1s, 2s, not 0.5s, 1s, 2s. It honours a Retry-After header when
+    the server sends one. A 404 is an answer, not a failure, so it is not
+    retried.
 
     `methods` defaults to GET only, because retrying a POST can repeat a side
     effect the server already applied. A caller whose POST only asks a question

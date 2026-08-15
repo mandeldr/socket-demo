@@ -428,3 +428,29 @@ def test_npms_lock_wins_when_a_project_has_both(
     assert main([str(tmp_path / "package.json"), "--format", "json"]) == EXIT_OK
 
     assert json.loads(capsys.readouterr().out)["summary"]["total_packages"] == 2
+
+
+def test_an_unwritable_output_path_is_a_usage_error(
+    tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An unguarded write here exits 1, which is the code for "vulnerable
+    dependency found" - so a CI job fails a clean project and blames the
+    dependencies. Every other error path returns 2."""
+    manifest_path = manifest(tmp_path, "")
+
+    code = main([str(manifest_path), "--output", str(tmp_path / "missing" / "out.json")])
+
+    assert code == EXIT_USAGE_ERROR
+    assert "could not write" in capsys.readouterr().err
+
+
+def test_the_report_is_still_printed_when_the_output_file_fails(
+    tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The scan succeeded; only the copy failed."""
+    manifest_path = manifest(tmp_path, "flask\n")
+
+    main([str(manifest_path), "--format", "json", "--output", str(tmp_path / "no" / "x.json")])
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["summary"]["total_packages"] == 2

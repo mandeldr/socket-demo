@@ -122,8 +122,8 @@ def _read_javascript(manifest: Path) -> tuple[ParseResult, DependencyGraph]:
     """Read a package.json with whichever lock file sits beside it.
 
     npm's lock wins when both are present, which is what npm itself does. A
-    project with neither gets the message naming both, since either one is a
-    fix and we should not assume which tool they use.
+    project with neither falls through to the npm reader, so the error names
+    `npm install --package-lock-only`; a yarn user has to translate that.
     """
     directory = manifest.parent
 
@@ -170,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {error}", file=sys.stderr)
         return EXIT_USAGE_ERROR
 
-    if args.stale_after and args.manifest.name in JAVASCRIPT_MANIFESTS:
+    if args.stale_after is not None and args.manifest.name in JAVASCRIPT_MANIFESTS:
         # The flag would otherwise report nothing stale, which reads as "none
         # found" rather than "never looked".
         note("note: a lock file carries no release dates, so --stale-after finds nothing")
@@ -200,7 +200,14 @@ def main(argv: list[str] | None = None) -> int:
         print(render(report, show_skipped=args.show_skipped))
 
     if args.output:
-        args.output.write_text(json.dumps(report, indent=2) + "\n")
+        try:
+            args.output.write_text(json.dumps(report, indent=2) + "\n")
+        except OSError as error:
+            # Not a traceback, and not exit 1: that is the code for "vulnerable
+            # dependency found", so a failed write here would fail a clean
+            # build and blame the dependencies.
+            print(f"error: could not write {args.output}: {error}", file=sys.stderr)
+            return EXIT_USAGE_ERROR
         note(f"wrote {args.output}")
 
     # Non-zero so a CI job fails on a vulnerable dependency, which is the whole

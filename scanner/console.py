@@ -75,7 +75,11 @@ def _print_findings(console: Console, report: dict) -> None:
     if report["ignored"]["count"]:
         ignored = f" ({report['ignored']['count']} ignored)"
 
-    if not report["findings"]:
+    # "Nothing found" and "nothing shown" are different answers. A severity
+    # filter can empty the list while the scan is still failing, and saying
+    # `no known vulnerabilities` there would contradict both the JSON and the
+    # exit code - a scanner claiming clean when it is not.
+    if not summary["total_vulnerabilities"]:
         console.print(f"\nno known vulnerabilities{ignored}")
         return
 

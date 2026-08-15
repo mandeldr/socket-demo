@@ -164,3 +164,87 @@ def test_merging_nothing_gives_nothing() -> None:
 def test_a_result_is_ok_only_when_there_is_no_error() -> None:
     assert QueryResult().ok
     assert not QueryResult(error="boom").ok
+
+
+# --- keeping the most useful copy, not just the most severe ----------------
+
+
+def test_a_record_with_a_fix_is_not_beaten_by_one_without() -> None:
+    """OSV often carries a fix with no severity word; GitHub carries a severity
+    with at most one patched version, and sometimes none for our package.
+    Ranking severity above the fix loses the only actionable part of a finding -
+    the user is told how bad it is and not what to upgrade to."""
+    with_fix = Vulnerability(
+        id="GHSA-x",
+        aliases={"CVE-1"},
+        fixed_versions=["2.5.0"],
+        source=Source.OSV,
+        severity="UNKNOWN",
+    )
+    with_severity = Vulnerability(
+        id="GHSA-x",
+        aliases={"CVE-1"},
+        fixed_versions=[],
+        source=Source.GITHUB,
+        severity="HIGH",
+    )
+
+    (kept,) = dedupe([with_fix, with_severity])
+
+    assert kept.fixed_versions == ["2.5.0"]
+
+
+def test_a_record_with_both_beats_one_with_either() -> None:
+    partial = Vulnerability(
+        id="GHSA-x",
+        aliases={"CVE-1"},
+        fixed_versions=["2.5.0"],
+        source=Source.OSV,
+        severity="UNKNOWN",
+    )
+    complete = Vulnerability(
+        id="GHSA-x",
+        aliases={"CVE-1"},
+        fixed_versions=["2.5.0"],
+        source=Source.GITHUB,
+        severity="HIGH",
+    )
+
+    (kept,) = dedupe([partial, complete])
+
+    assert kept.severity == "HIGH"
+    assert kept.fixed_versions == ["2.5.0"]
+
+
+def test_merging_two_sources_keeps_the_fix_and_the_severity() -> None:
+    """What the two sources are for: neither alone answers both questions."""
+    osv = QueryResult(
+        {
+            key("pkg"): [
+                Vulnerability(
+                    id="GHSA-x",
+                    aliases={"CVE-1"},
+                    fixed_versions=["2.5.0"],
+                    source=Source.OSV,
+                    severity="UNKNOWN",
+                )
+            ]
+        }
+    )
+    github = QueryResult(
+        {
+            key("pkg"): [
+                Vulnerability(
+                    id="GHSA-x",
+                    aliases={"CVE-1"},
+                    fixed_versions=[],
+                    source=Source.GITHUB,
+                    severity="HIGH",
+                )
+            ]
+        }
+    )
+
+    (found,) = merge([osv, github])[key("pkg")]
+
+    assert found.fixed_versions == ["2.5.0"]

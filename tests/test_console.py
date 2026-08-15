@@ -184,3 +184,37 @@ def test_a_skipped_line_from_a_text_manifest_still_prints_its_number() -> None:
     )
 
     assert "line 4: -e .  (editable install)" in render(report, show_skipped=True)
+
+
+# --- the filter must never read as "clean" ---------------------------------
+
+
+def test_a_severity_filter_that_hides_everything_says_so() -> None:
+    """The dangerous case. When --min-severity hides every finding the list is
+    empty, and an empty list used to print "no known vulnerabilities" - while
+    the exit code stayed non-zero. A scanner reporting clean when it is not is
+    the worst direction to be wrong in."""
+    report = report_for(
+        graph_with("high-pkg"),
+        {key("high-pkg"): [vulnerability("A", "CVE-1", severity="HIGH")]},
+        min_severity="CRITICAL",
+    )
+
+    output = render(report)
+
+    assert "no known vulnerabilities" not in output
+    assert "1 hidden" in output
+
+
+def test_the_hidden_count_is_shown_even_when_nothing_is_listed() -> None:
+    report = report_for(
+        graph_with("low-pkg"),
+        {key("low-pkg"): [vulnerability("A", "CVE-1", severity="LOW")]},
+        min_severity="HIGH",
+    )
+
+    assert "showing HIGH and above; 1 hidden" in render(report)
+
+
+def test_a_genuinely_clean_scan_still_says_so() -> None:
+    assert "no known vulnerabilities" in render(report_for(graph_with("flask"), {}))

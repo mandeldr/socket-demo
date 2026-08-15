@@ -39,8 +39,10 @@ class ResolutionError:
 class DependencyGraph:
     """Every package a manifest installs, and what asked for each one.
 
-    `nodes` is keyed by package, so it doubles as the set of things already
-    resolved - which is what stops the walk revisiting a cycle.
+    `nodes` is keyed by package. Each walk keeps its own visited set - the
+    resolver by name, the lock walk by install location - because what counts
+    as "already seen" differs between them; this dict is what they both write
+    into, and what the report reads.
     """
 
     nodes: dict[PackageKey, GraphNode] = field(default_factory=dict)

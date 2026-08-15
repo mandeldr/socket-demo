@@ -8,7 +8,7 @@ The clients themselves live in osv.py and github.py. Nothing here imports them,
 so the dependency only runs one way.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from scanner.models import PackageKey, Vulnerability
 
@@ -61,7 +61,7 @@ def cve_of(vulnerability: Vulnerability) -> str | None:
 
 
 def dedupe(vulnerabilities: list[Vulnerability]) -> list[Vulnerability]:
-    """Collapse records describing the same problem, keeping the fullest one.
+    """Collapse records describing the same problem into one.
 
     One CVE usually arrives more than once: OSV publishes GitHub's write-up and
     PyPA's, and GitHub is asked directly on top of that. Keyed on the CVE they
@@ -70,21 +70,36 @@ def dedupe(vulnerabilities: list[Vulnerability]) -> list[Vulnerability]:
     kept: dict[str, Vulnerability] = {}
     for vulnerability in vulnerabilities:
         key = cve_of(vulnerability) or vulnerability.id
-        if key not in kept or _completeness(vulnerability) > _completeness(kept[key]):
-            kept[key] = vulnerability
+        existing = kept.get(key)
+        kept[key] = vulnerability if existing is None else _combined(existing, vulnerability)
     return list(kept.values())
 
 
-def _completeness(vulnerability: Vulnerability) -> tuple[bool, bool]:
-    """How much of a record is filled in, for choosing between copies.
+def _combined(first: Vulnerability, second: Vulnerability) -> Vulnerability:
+    """One record from two copies, keeping what each of them answered.
 
-    PyPA records often omit the severity where GitHub has it. Whichever copy
-    answers more of the user's questions wins.
+    Choosing a copy whole loses the half that was fetched to fill a gap: OSV
+    often carries a patched version with no severity word, and GitHub the
+    severity with no patched version for our package. Picking either one alone
+    tells the user how bad it is without saying what to upgrade to, or the
+    reverse.
+
+    The copy answering more questions supplies the identity - id, url, source -
+    and anything still blank on it is taken from the other.
     """
-    return (
-        vulnerability.severity != UNKNOWN_SEVERITY,
-        bool(vulnerability.fixed_versions),
+    base, other = (first, second) if _answered(first) >= _answered(second) else (second, first)
+    return replace(
+        base,
+        severity=base.severity if base.severity != UNKNOWN_SEVERITY else other.severity,
+        fixed_versions=base.fixed_versions or other.fixed_versions,
+        summary=base.summary or other.summary,
+        aliases=base.aliases | other.aliases,
     )
+
+
+def _answered(vulnerability: Vulnerability) -> int:
+    """How many of the two questions a record answers: how bad, and fixed where."""
+    return (vulnerability.severity != UNKNOWN_SEVERITY) + bool(vulnerability.fixed_versions)
 
 
 def merge(results: list[QueryResult]) -> dict[PackageKey, list[Vulnerability]]:
