@@ -21,10 +21,15 @@ from pathlib import Path
 
 from scanner.enums import EcoSystem, SkipReason
 from scanner.graph import DependencyGraph
+from scanner.manifests import ManifestError
 from scanner.models import Dependency, PackageKey, ParseResult, SkippedLine
 
 MANIFEST = "package.json"
 LOCK = "package-lock.json"
+
+# What to tell someone whose lock file is missing or too old. It is the whole
+# fix, and it needs no network.
+REGENERATE = "run `npm install --package-lock-only` to generate one"
 
 # What an installed package can pull in. Its devDependencies are absent on
 # purpose: yours are installed on your machine, a library's are not installed
@@ -46,27 +51,52 @@ def parse(path: Path) -> tuple[ParseResult, DependencyGraph]:
     more than a requirements.txt does: it answers the resolution question as
     well as the "what did you ask for" one.
     """
-    manifest_path, lock_path = _pair_beside(path)
-
-    manifest = _load(manifest_path)
-    entries = _load(lock_path)["packages"]
-
-    return _requested(manifest), _installed(entries)
-
-
-def _pair_beside(path: Path) -> tuple[Path, Path]:
-    """The manifest and the lock, given either one of them."""
     directory = path.parent
-    return directory / MANIFEST, directory / LOCK
+
+    manifest = _load(directory / MANIFEST)
+    lock = _load(directory / LOCK, missing=f"{MANIFEST} has no {LOCK} beside it; {REGENERATE}")
+
+    return _requested(manifest), _installed(_entries(lock))
 
 
-def _load(path: Path) -> dict:
-    """Read one JSON file.
+def _load(path: Path, missing: str | None = None) -> dict:
+    """Read one JSON file, or say why it could not be read.
 
     utf-8-sig rather than utf-8: a byte order mark is invisible in an editor
-    and makes json.load refuse the whole file.
+    and makes a plain read refuse the whole file over three bytes nobody can
+    see.
     """
-    return json.loads(path.read_text(encoding="utf-8-sig"))
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        raise ManifestError(missing or f"no such file: {path}") from None
+
+    try:
+        loaded = json.loads(text)
+    except ValueError as exc:
+        raise ManifestError(f"{path.name} is not valid JSON: {exc}") from None
+
+    if not isinstance(loaded, dict):
+        raise ManifestError(f"{path.name} is not a JSON object")
+    return loaded
+
+
+def _entries(lock: dict) -> dict:
+    """The lock's package map, or an explanation of why there is not one.
+
+    npm 6 wrote an entirely different shape, keyed by name with the tree nested
+    inside itself. Read as a modern lock it simply has no packages, so without
+    this the answer would be a confident zero rather than a refusal.
+    """
+    if "packages" in lock:
+        return lock["packages"]
+
+    version = lock.get("lockfileVersion")
+    if version == 1 or "dependencies" in lock:
+        raise ManifestError(
+            f"{LOCK} is lockfileVersion 1, written by npm 6; {REGENERATE} with npm 7 or newer"
+        )
+    raise ManifestError(f"{LOCK} lists no packages")
 
 
 def _requested(manifest: dict) -> ParseResult:
