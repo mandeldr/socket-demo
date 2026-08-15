@@ -291,3 +291,24 @@ def test_a_direct_package_reached_again_deeper_stays_direct(tmp_path: Path) -> N
 
     assert graph.nodes[async_key].depth == 0
     assert len([n for n in graph.nodes.values() if n.depth == 0]) == len(graph.roots)
+
+
+def test_a_peer_dependency_of_the_project_is_not_counted(tmp_path: Path) -> None:
+    """Neither yarn 1 nor berry installs a peerDependency declared at the root -
+    measured, by locking the same package.json with both and finding it absent.
+    Counting it would report a requirement the project does not have."""
+    (tmp_path / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "x",
+                "dependencies": {"ms": "2.0.0"},
+                "peerDependencies": {"react": "^18.0.0"},
+            }
+        )
+    )
+    (tmp_path / "yarn.lock").write_text('ms@2.0.0:\n  version "2.0.0"\n')
+
+    parsed, graph = yarn_lock.parse(tmp_path / "package.json")
+
+    assert [d.name for d in parsed.dependencies] == ["ms"]
+    assert [k.name for k in graph.roots] == ["ms"]

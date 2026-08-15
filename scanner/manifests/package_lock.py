@@ -19,7 +19,14 @@ from pathlib import Path
 
 from scanner.enums import EcoSystem
 from scanner.graph import DependencyGraph
-from scanner.manifests import MANIFEST, ManifestError, read_json, requested, walk
+from scanner.manifests import (
+    MANIFEST,
+    NPM_PROJECT_FIELDS,
+    ManifestError,
+    read_json,
+    requested,
+    walk,
+)
 from scanner.models import PackageKey, ParseResult
 
 LOCK = "package-lock.json"
@@ -33,8 +40,9 @@ REGENERATE = "run `npm install --package-lock-only` to generate one"
 # on anyone's.
 INSTALLED_PACKAGE_FIELDS = ("dependencies", "optionalDependencies", "peerDependencies")
 
-# What the project itself pulls in, which is everything plus its own dev tools.
-PROJECT_FIELDS = INSTALLED_PACKAGE_FIELDS + ("devDependencies",)
+# What the project itself pulls in. Named in manifests/__init__ beside yarn's,
+# because the two differ by one field for a reason worth seeing.
+PROJECT_FIELDS = NPM_PROJECT_FIELDS
 
 
 def parse(path: Path) -> tuple[ParseResult, DependencyGraph]:

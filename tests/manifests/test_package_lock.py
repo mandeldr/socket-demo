@@ -566,3 +566,36 @@ def test_a_real_lock_keeps_every_root_at_depth_zero() -> None:
     _, graph = package_lock.parse(FIXTURES / "nodegoat" / "package.json")
 
     assert len([n for n in graph.nodes.values() if n.depth == 0]) == len(graph.roots) == 36
+
+
+def test_a_peer_dependency_of_the_project_is_installed_and_counted(tmp_path: Path) -> None:
+    """npm 7 and later install a peerDependency declared at the root, so it is
+    something the project asked for. Measured against npm rather than assumed:
+    a root peer shows up in the lock it writes."""
+    (tmp_path / "package.json").write_text(
+        json.dumps(
+            {
+                "name": "t",
+                "version": "1.0.0",
+                "dependencies": {"ms": "2.0.0"},
+                "peerDependencies": {"react": "^18.0.0"},
+            }
+        )
+    )
+    (tmp_path / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {"dependencies": {"ms": "2.0.0"}, "peerDependencies": {"react": "^18.0.0"}},
+                    "node_modules/ms": {"version": "2.0.0"},
+                    "node_modules/react": {"version": "18.3.1"},
+                },
+            }
+        )
+    )
+
+    parsed, graph = package_lock.parse(tmp_path / "package.json")
+
+    assert len(parsed.dependencies) == 2
+    assert sorted(k.name for k in graph.roots) == ["ms", "react"]

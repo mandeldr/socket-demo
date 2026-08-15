@@ -18,7 +18,14 @@ import yaml
 
 from scanner.enums import EcoSystem
 from scanner.graph import DependencyGraph
-from scanner.manifests import MANIFEST, ManifestError, read_json, requested, walk
+from scanner.manifests import (
+    MANIFEST,
+    YARN_PROJECT_FIELDS,
+    ManifestError,
+    read_json,
+    requested,
+    walk,
+)
 from scanner.models import PackageKey, ParseResult
 
 LOCK = "yarn.lock"
@@ -33,9 +40,9 @@ NPM_PROTOCOL = "npm:"
 # Berry's file header. It parses as an entry and is not a package.
 METADATA_KEY = "__metadata"
 
-# What the project asks for. Yarn installs the project's own devDependencies,
-# exactly as npm does.
-PROJECT_FIELDS = ("dependencies", "devDependencies", "optionalDependencies")
+# What the project asks for. Named in manifests/__init__ beside npm's, because
+# the two differ by one field for a reason worth seeing.
+PROJECT_FIELDS = YARN_PROJECT_FIELDS
 
 
 class Entry(NamedTuple):

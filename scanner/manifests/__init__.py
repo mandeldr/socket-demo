@@ -21,6 +21,22 @@ MANIFEST = "package.json"
 # `portal:` is yarn's; the rest are shared.
 LOCAL_PREFIXES = ("file:", "link:", "workspace:", "portal:")
 
+# What a project's own package.json counts as asking for. The two lists differ
+# by one field, and that difference is real rather than an oversight: npm 7 and
+# later install a peerDependency declared at the root, and neither yarn 1 nor
+# berry does. Locking the same manifest with all three puts react in npm's file
+# and in neither yarn one.
+#
+# So they are kept here, next to each other, because the only way to notice a
+# difference living in two modules is to go looking for it.
+NPM_PROJECT_FIELDS = (
+    "dependencies",
+    "devDependencies",
+    "optionalDependencies",
+    "peerDependencies",
+)
+YARN_PROJECT_FIELDS = ("dependencies", "devDependencies", "optionalDependencies")
+
 
 class ManifestError(Exception):
     """A manifest that could not be read at all.
