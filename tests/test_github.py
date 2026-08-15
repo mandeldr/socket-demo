@@ -155,23 +155,76 @@ def test_the_fix_is_the_one_for_this_package() -> None:
             {"package": {"name": "urllib3"}, "first_patched_version": "2.5.0"},
         ]
     }
-    assert _patched_version(advisory, "urllib3") == "2.5.0"
+    assert _patched_version(advisory, key("urllib3")) == "2.5.0"
 
 
 def test_a_package_the_advisory_does_not_cover_has_no_fix() -> None:
     advisory = {"vulnerabilities": [{"package": {"name": "other"}, "first_patched_version": "9.9"}]}
-    assert _patched_version(advisory, "urllib3") is None
+    assert _patched_version(advisory, key("urllib3")) is None
 
 
 def test_an_advisory_with_no_published_fix() -> None:
     advisory = {"vulnerabilities": [{"package": {"name": "urllib3"}}]}
-    assert _patched_version(advisory, "urllib3") is None
+    assert _patched_version(advisory, key("urllib3")) is None
 
 
 def test_a_sparse_advisory_does_not_crash() -> None:
-    vulnerability = _vulnerability({"ghsa_id": "GHSA-bare"}, "urllib3")
+    vulnerability = _vulnerability({"ghsa_id": "GHSA-bare"}, key("urllib3"))
     assert vulnerability.severity == "UNKNOWN"
     assert vulnerability.fixed_versions == []
+
+
+# --- one advisory, many ecosystems ----------------------------------------
+
+
+def npm_key(name: str, version: str = "1.0") -> PackageKey:
+    return PackageKey(name, version, EcoSystem.NPM)
+
+
+def test_a_fix_from_another_ecosystem_is_ignored() -> None:
+    """One CVE is often filed against the npm package and the PyPI one, patched
+    at unrelated versions. Matching on name alone picks whichever came first."""
+    advisory = {
+        "vulnerabilities": [
+            {"package": {"ecosystem": "npm", "name": "urllib3"}, "first_patched_version": "9.9.9"},
+            {"package": {"ecosystem": "pip", "name": "urllib3"}, "first_patched_version": "2.5.0"},
+        ]
+    }
+    assert _patched_version(advisory, key("urllib3")) == "2.5.0"
+
+
+def test_the_python_ecosystem_is_spelled_the_way_github_spells_it() -> None:
+    """GitHub says `pip` where OSV says `PyPI`, so EcoSystem.value cannot be
+    compared to this field directly."""
+    advisory = {
+        "vulnerabilities": [
+            {"package": {"ecosystem": "pip", "name": "requests"}, "first_patched_version": "2.32.0"}
+        ]
+    }
+    assert _patched_version(advisory, key("requests")) == "2.32.0"
+
+
+def test_an_npm_fix_is_found_for_a_dotted_name() -> None:
+    """The counterpart of the OSV case: PyPI's rule would read this as
+    `lodash-merge` and drop the only actionable part of the finding."""
+    advisory = {
+        "vulnerabilities": [
+            {
+                "package": {"ecosystem": "npm", "name": "lodash.merge"},
+                "first_patched_version": "4.6.1",
+            }
+        ]
+    }
+    assert _patched_version(advisory, npm_key("lodash.merge")) == "4.6.1"
+
+
+def test_an_advisory_with_no_ecosystem_is_matched_on_name_alone() -> None:
+    """Older captured advisories omit it; dropping those would lose fixes we
+    already report today."""
+    advisory = {
+        "vulnerabilities": [{"package": {"name": "urllib3"}, "first_patched_version": "2.5.0"}]
+    }
+    assert _patched_version(advisory, key("urllib3")) == "2.5.0"
 
 
 # --- authentication and failure -------------------------------------------

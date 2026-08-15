@@ -308,3 +308,32 @@ def test_the_package_name_is_matched_after_normalising() -> None:
         ]
     }
     assert _fixed_versions(record, key("zope-interface", "4.0")) == ["5.0"]
+
+
+def test_a_dotted_npm_name_still_finds_its_fix() -> None:
+    """Normalising with PyPI's rule would read this as `lodash-merge`, which the
+    advisory does not name - so the fix silently disappears and the finding is
+    reported with no way to act on it."""
+    record = {
+        "affected": [
+            {
+                "package": {"ecosystem": "npm", "name": "lodash.merge"},
+                "ranges": [{"type": "SEMVER", "events": [{"fixed": "4.6.1"}]}],
+            }
+        ]
+    }
+    npm_key = PackageKey("lodash.merge", "4.6.0", EcoSystem.NPM)
+
+    assert _fixed_versions(record, npm_key) == ["4.6.1"]
+
+
+def test_an_npm_name_is_matched_case_insensitively() -> None:
+    record = {
+        "affected": [
+            {
+                "package": {"ecosystem": "npm", "name": "Base64"},
+                "ranges": [{"type": "SEMVER", "events": [{"fixed": "1.0.0"}]}],
+            }
+        ]
+    }
+    assert _fixed_versions(record, PackageKey("base64", "0.9", EcoSystem.NPM)) == ["1.0.0"]
