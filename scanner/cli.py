@@ -6,12 +6,18 @@ resolution or HTTP logic.
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
+from scanner.console import render
+from scanner.github import GHSAClient
+from scanner.osv import OSVClient
 from scanner.parsers import parse_requirements_txt
 from scanner.pypi import PyPIClient
-from scanner.resolver import DEFAULT_MAX_DEPTH, resolve
+from scanner.report import build
+from scanner.resolver import resolve
+from scanner.sources import merge
 
 # Exit codes. Chosen to match the convention CI tools use (and Socket's own
 # `socket ci`): 0 means "ran and passed", non-zero means something a build
@@ -19,7 +25,11 @@ from scanner.resolver import DEFAULT_MAX_DEPTH, resolve
 EXIT_OK = 0
 EXIT_VULNERABILITIES_FOUND = 1
 EXIT_USAGE_ERROR = 2
-EXIT_SCAN_ERROR = 3
+
+
+def note(message: str) -> None:
+    """Progress, on stderr so it never mixes into the report on stdout."""
+    print(message, file=sys.stderr, flush=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -38,25 +48,42 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "manifest",
         type=Path,
-        help="path to a manifest file (requirements.txt or package.json)",
+        help="path to a requirements.txt manifest",
     )
     parser.add_argument(
         "--format",
-        choices=("console", "json", "both"),
+        choices=("console", "json"),
         default="console",
         help="output format (default: console)",
-    )
-    parser.add_argument(
-        "--max-depth",
-        type=int,
-        default=DEFAULT_MAX_DEPTH,
-        help=f"how deep to follow transitive dependencies (default: {DEFAULT_MAX_DEPTH})",
     )
     parser.add_argument(
         "--output",
         type=Path,
         metavar="PATH",
         help="write the JSON report to this file",
+    )
+    parser.add_argument(
+        "--ignore",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="suppress an advisory by CVE or GHSA id (repeatable)",
+    )
+    parser.add_argument(
+        "--stale-after",
+        type=int,
+        metavar="DAYS",
+        help="flag packages with no release in this many days",
+    )
+    parser.add_argument(
+        "--min-severity",
+        choices=("CRITICAL", "HIGH", "MEDIUM", "LOW"),
+        help="only list findings at least this serious (unknown severities are always shown)",
+    )
+    parser.add_argument(
+        "--show-skipped",
+        action="store_true",
+        help="list the manifest lines that were not scanned",
     )
     return parser
 
@@ -80,30 +107,42 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: not a file: {args.manifest}", file=sys.stderr)
         return EXIT_USAGE_ERROR
 
+    # Everything below reports progress on stderr, so that stdout carries only
+    # the report and `scanner --format json | jq` works.
     parsed = parse_requirements_txt(args.manifest)
-    print(f"{args.manifest}: {len(parsed.dependencies)} direct dependencies")
-    if parsed.skipped:
-        print(f"  ({len(parsed.skipped)} lines skipped)")
+    note("resolving...")
+    graph = resolve(parsed.dependencies, PyPIClient().fetch)
 
-    print("resolving...", flush=True)
-    graph = resolve(parsed.dependencies, PyPIClient().fetch, max_depth=args.max_depth)
+    packages = [node.key for node in graph.nodes.values() if not node.failed]
+    note(f"checking {len(packages)} packages against OSV...")
+    osv = OSVClient().query(packages)
 
-    # Count direct packages from the resolved set, not from graph.roots: roots
-    # includes packages that failed to resolve, so using it makes the counts
-    # disagree with the list printed below (and with each other).
-    resolved = [n for n in graph.nodes.values() if not n.failed]
-    direct = [n for n in resolved if n.depth == 0]
-    transitive = [n for n in resolved if n.depth > 0]
-    print(f"\n{len(resolved)} packages ({len(direct)} direct, {len(transitive)} transitive)")
+    # GitHub is only asked about the findings OSV left incomplete, so this is
+    # usually a handful of requests rather than one per package.
+    github = GHSAClient().fill_gaps(osv.findings)
 
-    for node in sorted(resolved, key=lambda n: (n.depth, n.key.name)):
-        indent = "  " * node.depth
-        print(f"  {indent}{node.key.name} {node.key.version}")
+    report = build(
+        manifest=args.manifest,
+        graph=graph,
+        findings=merge([osv, github]),
+        source_errors={"osv": osv.error, "github": github.error},
+        parsed=parsed,
+        ignore=args.ignore,
+        stale_after_days=args.stale_after,
+        min_severity=args.min_severity,
+    )
 
-    if graph.errors:
-        print(f"\ncould not resolve {len(graph.errors)}:")
-        for error in graph.errors:
-            print(f"  {error.package}: {error.error}")
+    if args.format == "json":
+        print(json.dumps(report, indent=2))
+    else:
+        print(render(report, show_skipped=args.show_skipped))
 
-    # TODO(stage 2): query OSV for these packages and report vulnerabilities.
-    return EXIT_OK
+    if args.output:
+        args.output.write_text(json.dumps(report, indent=2) + "\n")
+        note(f"wrote {args.output}")
+
+    # Non-zero so a CI job fails on a vulnerable dependency, which is the whole
+    # point of running this in a pipeline. Counted from the summary rather than
+    # the printed findings: --min-severity decides what is shown, and a display
+    # flag that could turn a failing build green would be a way to silence CI.
+    return EXIT_VULNERABILITIES_FOUND if report["summary"]["total_vulnerabilities"] else EXIT_OK

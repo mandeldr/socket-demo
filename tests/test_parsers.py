@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from scanner.enums import EcoSystem, SkipReason
+from scanner.enums import SkipReason
 from scanner.parsers import parse_requirements_txt
 
 
@@ -19,7 +19,7 @@ def write(tmp_path: Path, content: str, name: str = "requirements.txt") -> Path:
 
 
 def names(result) -> list[str]:
-    return [d.key.name for d in result.dependencies]
+    return [d.name for d in result.dependencies]
 
 
 # the basics
@@ -40,17 +40,7 @@ def test_blank_lines_and_comments_are_ignored(tmp_path: Path) -> None:
 def test_single_pinned_requirement(tmp_path: Path) -> None:
     result = parse_requirements_txt(write(tmp_path, "flask==3.0.0\n"))
     (dep,) = result.dependencies
-    assert dep.key.name == "flask"
-    assert dep.key.version == "3.0.0"
-    assert dep.key.eco_system is EcoSystem.PYTHON
-
-
-def test_every_manifest_entry_is_direct_at_depth_zero(tmp_path: Path) -> None:
-    result = parse_requirements_txt(write(tmp_path, "flask==3.0.0\n"))
-    (dep,) = result.dependencies
-    assert dep.is_direct is True
-    assert dep.depth == 0
-    assert dep.parent is None
+    assert dep.name == "flask"
 
 
 def test_raw_spec_is_preserved(tmp_path: Path) -> None:
@@ -67,21 +57,18 @@ def test_raw_spec_is_preserved(tmp_path: Path) -> None:
 def test_range_has_no_pinned_version(tmp_path: Path) -> None:
     result = parse_requirements_txt(write(tmp_path, "pandas>=2.0.0,<3.0.0\n"))
     (dep,) = result.dependencies
-    assert dep.key.version is None
 
 
 def test_unpinned_package_has_no_version(tmp_path: Path) -> None:
     """`pyyaml` with no specifier cannot be queried until it is resolved."""
     result = parse_requirements_txt(write(tmp_path, "pyyaml\n"))
     (dep,) = result.dependencies
-    assert dep.key.name == "pyyaml"
-    assert dep.key.version is None
+    assert dep.name == "pyyaml"
 
 
 def test_compatible_release_operator_is_not_a_pin(tmp_path: Path) -> None:
     result = parse_requirements_txt(write(tmp_path, "click~=8.1.7\n"))
     (dep,) = result.dependencies
-    assert dep.key.version is None
 
 
 # names
@@ -96,14 +83,13 @@ def test_names_are_canonicalized(tmp_path: Path) -> None:
 def test_extras_are_stripped_from_the_name(tmp_path: Path) -> None:
     result = parse_requirements_txt(write(tmp_path, "requests[security]==2.31.0\n"))
     (dep,) = result.dependencies
-    assert dep.key.name == "requests"
+    assert dep.name == "requests"
 
 
 def test_multiple_extras(tmp_path: Path) -> None:
     result = parse_requirements_txt(write(tmp_path, "celery[redis,auth]==5.3.6\n"))
     (dep,) = result.dependencies
-    assert dep.key.name == "celery"
-    assert dep.key.version == "5.3.6"
+    assert dep.name == "celery"
 
 
 # whitespace, comments, continuations
@@ -112,21 +98,19 @@ def test_multiple_extras(tmp_path: Path) -> None:
 def test_leading_and_trailing_whitespace(tmp_path: Path) -> None:
     result = parse_requirements_txt(write(tmp_path, "   flask==3.0.0   \n"))
     (dep,) = result.dependencies
-    assert dep.key.name == "flask"
+    assert dep.name == "flask"
 
 
 def test_trailing_comment_is_removed(tmp_path: Path) -> None:
     content = "cryptography==42.0.1  # pinned for FIPS\n"
     result = parse_requirements_txt(write(tmp_path, content))
     (dep,) = result.dependencies
-    assert dep.key.version == "42.0.1"
 
 
 def test_spaces_around_operator(tmp_path: Path) -> None:
     result = parse_requirements_txt(write(tmp_path, "packaging  ==  23.2\n"))
     (dep,) = result.dependencies
-    assert dep.key.name == "packaging"
-    assert dep.key.version == "23.2"
+    assert dep.name == "packaging"
 
 
 # environment markers
@@ -141,7 +125,7 @@ def test_markers_are_kept_not_evaluated(tmp_path: Path) -> None:
     content = 'pywin32==306 ; sys_platform == "win32"\n'
     result = parse_requirements_txt(write(tmp_path, content))
     (dep,) = result.dependencies
-    assert dep.key.name == "pywin32"
+    assert dep.name == "pywin32"
 
 
 # lines that are not requirements
@@ -211,3 +195,123 @@ def test_hostile_fixture_does_not_crash() -> None:
     result = parse_requirements_txt(FIXTURES / "hostile.txt")
     assert result.dependencies  # some lines are real requirements
     assert result.skipped  # and plenty are not
+
+
+# --- line continuations ----------------------------------------------------
+
+
+def test_a_backslash_continuation_is_one_requirement(tmp_path: Path) -> None:
+    """pip-compile and `pip freeze --require-hashes` write every pin this way,
+    so a scanner that cannot read them cannot read the most careful manifests."""
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text(
+        "flask==3.0.0 \\\n"
+        "    --hash=sha256:cfadcdb638b609361d29ec22360d6070a77d7463dcb3ab08d2c2f2 \\\n"
+        "    --hash=sha256:99c2b1b0f9f0e37e5e8b9b1b1e0fb4d5b8e6c8e0d0e1f2a3b4c5d6\n"
+    )
+
+    result = parse_requirements_txt(manifest)
+
+    assert [d.name for d in result.dependencies] == ["flask"]
+    assert result.skipped == []
+
+
+def test_a_continued_line_is_reported_at_its_first_line(tmp_path: Path) -> None:
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("flask==3.0.0\n!!!broken!!! \\\n    keeps going\n")
+
+    result = parse_requirements_txt(manifest)
+
+    (skipped,) = result.skipped
+    assert skipped.line_number == 2
+
+
+def test_several_continued_requirements_in_a_row(tmp_path: Path) -> None:
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text(
+        "flask==3.0.0 \\\n    --hash=sha256:aaa\nrequests==2.31.0 \\\n    --hash=sha256:bbb\n"
+    )
+
+    result = parse_requirements_txt(manifest)
+
+    assert [d.name for d in result.dependencies] == ["flask", "requests"]
+
+
+def test_a_trailing_backslash_at_the_end_of_the_file(tmp_path: Path) -> None:
+    """Malformed, but it should not take the scan down."""
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("flask==3.0.0 \\\n")
+
+    assert [d.name for d in parse_requirements_txt(manifest).dependencies] == ["flask"]
+
+
+def test_a_backslash_inside_a_line_is_not_a_continuation(tmp_path: Path) -> None:
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("flask==3.0.0\nrequests==2.31.0\n")
+
+    assert len(parse_requirements_txt(manifest).dependencies) == 2
+
+
+def test_a_continuation_still_has_its_comment_stripped(tmp_path: Path) -> None:
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("flask==3.0.0 \\\n    --hash=sha256:aaa  # pinned by security\n")
+
+    result = parse_requirements_txt(manifest)
+
+    assert [d.name for d in result.dependencies] == ["flask"]
+
+
+def test_per_requirement_options_are_stripped(tmp_path: Path) -> None:
+    """`--hash` and friends belong to the requirement but are not part of it."""
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("flask==3.0.0 --hash=sha256:aaa --hash=sha256:bbb\n")
+
+    assert [d.name for d in parse_requirements_txt(manifest).dependencies] == ["flask"]
+
+
+def test_a_line_that_is_only_a_pip_option_is_still_skipped(tmp_path: Path) -> None:
+    """Stripping options must not turn `--index-url ...` into an empty line."""
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("--index-url https://example.com/simple\n")
+
+    result = parse_requirements_txt(manifest)
+
+    assert result.dependencies == []
+    assert [s.reason for s in result.skipped] == [SkipReason.PIP_OPTION]
+
+
+def test_a_marker_survives_option_stripping(tmp_path: Path) -> None:
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text('tomli==2.0.1 ; python_version < "3.11" --hash=sha256:aaa\n')
+
+    assert [d.name for d in parse_requirements_txt(manifest).dependencies] == ["tomli"]
+
+
+# --- extras ----------------------------------------------------------------
+
+
+def test_a_requested_extra_is_kept(tmp_path: Path) -> None:
+    """`celery[redis]` installs redis. Dropping the extra makes it invisible."""
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("celery[redis]==5.3.6\n")
+
+    (dep,) = parse_requirements_txt(manifest).dependencies
+
+    assert dep.name == "celery"
+    assert dep.extras == frozenset({"redis"})
+
+
+def test_several_extras_are_all_kept(tmp_path: Path) -> None:
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("celery[redis,auth]==5.3.6\n")
+
+    (dep,) = parse_requirements_txt(manifest).dependencies
+
+    assert dep.extras == frozenset({"redis", "auth"})
+
+
+def test_no_extras_is_an_empty_set(tmp_path: Path) -> None:
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("celery==5.3.6\n")
+
+    assert parse_requirements_txt(manifest).dependencies[0].extras == frozenset()

@@ -80,34 +80,36 @@ def test_a_record_with_only_a_vector_is_left_for_github_to_answer() -> None:
 
 
 def test_fixed_versions_are_read_from_the_events_list() -> None:
-    assert _fixed_versions(RECORD) == ["2.5.0"]
+    assert _fixed_versions(RECORD, key("urllib3", "1.26.20")) == ["2.5.0"]
 
 
 def test_a_range_with_no_fix_reports_nothing() -> None:
     """No `fixed` event means no patched release exists yet."""
     record = {"affected": [{"ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}]}]}
-    assert _fixed_versions(record) == []
+    assert _fixed_versions(record, key("pkg", "1.0")) == []
 
 
 def test_git_ranges_are_skipped() -> None:
     """Their versions are commit hashes; "upgrade to f05b1329" is not advice."""
+    pypi = {"ecosystem": "PyPI", "name": "pkg"}
     record = {
         "affected": [
-            {"ranges": [{"type": "GIT", "events": [{"fixed": "f05b1329126d5be6de501"}]}]},
-            {"ranges": [{"type": "ECOSYSTEM", "events": [{"fixed": "2.5.0"}]}]},
+            {"package": pypi, "ranges": [{"type": "GIT", "events": [{"fixed": "f05b13291"}]}]},
+            {"package": pypi, "ranges": [{"type": "ECOSYSTEM", "events": [{"fixed": "2.5.0"}]}]},
         ]
     }
-    assert _fixed_versions(record) == ["2.5.0"]
+    assert _fixed_versions(record, key("pkg", "1.0")) == ["2.5.0"]
 
 
 def test_several_maintained_branches_give_several_fixes() -> None:
+    pypi = {"ecosystem": "PyPI", "name": "pkg"}
     record = {
         "affected": [
-            {"ranges": [{"type": "ECOSYSTEM", "events": [{"fixed": "1.26.19"}]}]},
-            {"ranges": [{"type": "ECOSYSTEM", "events": [{"fixed": "2.2.2"}]}]},
+            {"package": pypi, "ranges": [{"type": "ECOSYSTEM", "events": [{"fixed": "1.26.19"}]}]},
+            {"package": pypi, "ranges": [{"type": "ECOSYSTEM", "events": [{"fixed": "2.2.2"}]}]},
         ]
     }
-    assert _fixed_versions(record) == ["1.26.19", "2.2.2"]
+    assert _fixed_versions(record, key("pkg", "1.0")) == ["1.26.19", "2.2.2"]
 
 
 # --- querying -------------------------------------------------------------
@@ -199,9 +201,110 @@ def test_what_was_found_before_a_failure_is_kept() -> None:
 
 def test_the_vulnerability_model_survives_a_sparse_record() -> None:
     """Only `id` is guaranteed; everything else should degrade, not crash."""
-    vulnerability = _vulnerability({"id": "GHSA-bare"})
+    vulnerability = _vulnerability({"id": "GHSA-bare"}, key("pkg", "1.0"))
 
     assert vulnerability.id == "GHSA-bare"
     assert vulnerability.severity == "UNKNOWN"
     assert vulnerability.fixed_versions == []
     assert vulnerability.aliases == set()
+
+
+# --- the description the report shows --------------------------------------
+
+
+def test_a_summary_with_stray_whitespace_is_cleaned() -> None:
+    """OSV really does return these; two django records have them."""
+    record = dict(RECORD, summary=" Django: GDALRaster may over-read heap memory ")
+    assert (
+        _vulnerability(record, key("pkg", "1.0")).summary
+        == "Django: GDALRaster may over-read heap memory"
+    )
+
+
+def test_details_are_used_when_there_is_no_summary() -> None:
+    """PyPA records often carry only the long form, and a finding with no
+    description at all is not much use to a reader."""
+    record = {
+        "id": "PYSEC-1",
+        "details": "Pallets Click contains a command injection vulnerability.",
+    }
+    assert _vulnerability(record, key("pkg", "1.0")).summary == (
+        "Pallets Click contains a command injection vulnerability."
+    )
+
+
+def test_only_the_first_paragraph_of_details_is_used() -> None:
+    """Details are long markdown; the console wants one line."""
+    record = {"id": "PYSEC-1", "details": "The short version.\n\nThen paragraphs of markdown."}
+    assert _vulnerability(record, key("pkg", "1.0")).summary == "The short version."
+
+
+def test_a_summary_is_preferred_over_details() -> None:
+    record = {"id": "PYSEC-1", "summary": "short", "details": "much longer"}
+    assert _vulnerability(record, key("pkg", "1.0")).summary == "short"
+
+
+def test_a_record_with_neither_has_no_description() -> None:
+    assert _vulnerability({"id": "PYSEC-1"}, key("pkg", "1.0")).summary == ""
+
+
+# --- one advisory, many packages -------------------------------------------
+
+
+MULTI_PACKAGE = {
+    "id": "GHSA-multi",
+    "affected": [
+        {
+            "package": {"ecosystem": "npm", "name": "jquery"},
+            "ranges": [{"type": "ECOSYSTEM", "events": [{"fixed": "3.4.0"}]}],
+        },
+        {
+            "package": {"ecosystem": "PyPI", "name": "django"},
+            "ranges": [{"type": "ECOSYSTEM", "events": [{"fixed": "2.1.9"}]}],
+        },
+        {
+            "package": {"ecosystem": "PyPI", "name": "django"},
+            "ranges": [{"type": "ECOSYSTEM", "events": [{"fixed": "2.2.2"}]}],
+        },
+        {
+            "package": {"ecosystem": "Packagist", "name": "maximebf/debugbar"},
+            "ranges": [{"type": "ECOSYSTEM", "events": [{"fixed": "1.19.0"}]}],
+        },
+    ],
+}
+
+
+def test_only_our_packages_fixes_are_reported() -> None:
+    """One advisory can cover several ecosystems. Telling a django user to
+    upgrade to a jquery version would be worse than saying nothing."""
+    assert _fixed_versions(MULTI_PACKAGE, key("django", "2.2.0")) == ["2.1.9", "2.2.2"]
+
+
+def test_a_package_the_advisory_does_not_cover_has_no_fixes() -> None:
+    assert _fixed_versions(MULTI_PACKAGE, key("flask", "1.0")) == []
+
+
+def test_the_ecosystem_has_to_match_too() -> None:
+    """`requests` exists on PyPI and npm and they are different projects."""
+    record = {
+        "affected": [
+            {
+                "package": {"ecosystem": "npm", "name": "django"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"fixed": "9.9.9"}]}],
+            }
+        ]
+    }
+    assert _fixed_versions(record, key("django", "2.2.0")) == []
+
+
+def test_the_package_name_is_matched_after_normalising() -> None:
+    """OSV writes what the publisher wrote; PackageKey is canonical."""
+    record = {
+        "affected": [
+            {
+                "package": {"ecosystem": "PyPI", "name": "Zope.Interface"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"fixed": "5.0"}]}],
+            }
+        ]
+    }
+    assert _fixed_versions(record, key("zope-interface", "4.0")) == ["5.0"]

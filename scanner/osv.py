@@ -9,6 +9,8 @@ OSV aggregates several databases, so the same CVE usually comes back twice.
 `dedupe` collapses them.
 """
 
+from packaging.utils import canonicalize_name
+
 from scanner.enums import Source
 from scanner.http import DEFAULT_TIMEOUT, make_session
 from scanner.models import PackageKey, Vulnerability
@@ -41,7 +43,7 @@ class OSVClient:
                 # Keep what was found before the failure and say it is partial.
                 return QueryResult(findings, error=error)
             if records:
-                findings[package] = dedupe([_vulnerability(r) for r in records])
+                findings[package] = dedupe([_vulnerability(r, package) for r in records])
 
         return QueryResult(findings)
 
@@ -62,7 +64,7 @@ class OSVClient:
             return None, f"could not reach OSV ({type(exc).__name__})"
 
 
-def _vulnerability(record: dict) -> Vulnerability:
+def _vulnerability(record: dict, package: PackageKey) -> Vulnerability:
     """Turn one OSV record into the model the report uses.
 
     The advisory link is built from the id rather than dug out of `references`,
@@ -72,15 +74,30 @@ def _vulnerability(record: dict) -> Vulnerability:
     return Vulnerability(
         id=record["id"],
         aliases=set(record.get("aliases") or []),
-        fixed_versions=_fixed_versions(record),
+        fixed_versions=_fixed_versions(record, package),
         source=Source.OSV,
         severity=_severity(record),
-        summary=record.get("summary", ""),
+        summary=_description(record),
         url=f"https://osv.dev/vulnerability/{record['id']}",
     )
 
 
-def _fixed_versions(record: dict) -> list[str]:
+def _description(record: dict) -> str:
+    """One line saying what is wrong.
+
+    PyPA records often carry no `summary` at all, only the long `details`
+    markdown, and a finding with no description is not much use to a reader.
+    OSV also returns the odd summary with a stray space on the end.
+    """
+    summary = (record.get("summary") or "").strip()
+    if summary:
+        return summary
+
+    details = (record.get("details") or "").strip()
+    return details.split("\n\n")[0].strip()
+
+
+def _fixed_versions(record: dict, package: PackageKey) -> list[str]:
     """The releases that carry the fix.
 
     OSV describes an affected range as a flat list of events: `introduced`
@@ -92,6 +109,8 @@ def _fixed_versions(record: dict) -> list[str]:
     """
     versions: list[str] = []
     for affected in record.get("affected") or []:
+        if not _covers(affected, package):
+            continue
         for entry in affected.get("ranges") or []:
             if entry.get("type") == "GIT":
                 continue
@@ -99,6 +118,20 @@ def _fixed_versions(record: dict) -> list[str]:
                 if "fixed" in event and event["fixed"] not in versions:
                     versions.append(event["fixed"])
     return versions
+
+
+def _covers(affected: dict, package: PackageKey) -> bool:
+    """Whether this entry is about the package we asked about.
+
+    One advisory routinely spans ecosystems - a jQuery flaw is filed against
+    the npm package, the NuGet one, the Ruby gem and the Django that vendors
+    it. Their fixed versions are unrelated to ours.
+    """
+    named = affected.get("package") or {}
+    return (
+        named.get("ecosystem") == package.eco_system.value
+        and canonicalize_name(named.get("name") or "") == package.name
+    )
 
 
 def _severity(record: dict) -> str:

@@ -3,7 +3,7 @@
 Provides the `fetch` callable the resolver walks the dependency tree with.
 """
 
-import logging
+from datetime import datetime
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import SpecifierSet
@@ -16,8 +16,6 @@ from scanner.resolver import FetchResult
 BASE_URL = "https://pypi.org/pypi"
 NOT_ON_PYPI = "no such package on PyPI"
 
-log = logging.getLogger(__name__)
-
 
 class PyPIClient:
     """Looks up package metadata, remembering what it has already seen."""
@@ -27,7 +25,9 @@ class PyPIClient:
         self.timeout = timeout
         self._cache: dict[str, tuple[dict | None, str | None]] = {}
 
-    def fetch(self, name: str, spec: SpecifierSet) -> FetchResult:
+    def fetch(
+        self, name: str, spec: SpecifierSet, extras: frozenset[str] = frozenset()
+    ) -> FetchResult:
         """Return the version satisfying `spec` and that version's requirements."""
         name = canonicalize_name(name)
 
@@ -35,18 +35,25 @@ class PyPIClient:
         if error or page is None:
             return FetchResult(error=error)
 
+        published = _last_release(page)
         latest = page["info"]["version"]
-        if spec.contains(latest, prereleases=True):
-            return FetchResult(latest, _requirements(page))
 
+        # Every version goes through the same selection, rather than testing
+        # `latest` separately: SpecifierSet.contains() matches prereleases where
+        # filter() does not, so two paths would answer differently for an rc.
         version = _best_match(page.get("releases", {}), spec)
         if version is None:
-            return FetchResult(error=f"no release satisfies {spec}")
+            return FetchResult(error=f"no release satisfies {spec} (latest is {latest})")
+
+        # The page we already have describes the latest release, so choosing it
+        # costs nothing more.
+        if version == latest:
+            return FetchResult(latest, _requirements(page, extras), last_release=published)
 
         pinned, error = self._get(f"{BASE_URL}/{name}/{version}/json")
         if error or pinned is None:
             return FetchResult(error=f"metadata for {version} unavailable ({error})")
-        return FetchResult(version, _requirements(pinned))
+        return FetchResult(version, _requirements(pinned, extras), last_release=published)
 
     def _get(self, url: str) -> tuple[dict | None, str | None]:
         """Fetch and decode a URL. Returns (payload, error); exactly one is set."""
@@ -67,13 +74,56 @@ class PyPIClient:
         except OSError as exc:
             result = (None, f"could not reach PyPI ({type(exc).__name__})")
 
-        if result[1]:
-            log.debug("%s: %s", url, result[1])
         self._cache[url] = result
         return result
 
 
-def _requirements(page: dict) -> list[Requirement]:
+def _is_installed(requirement: Requirement, extras: frozenset[str]) -> bool:
+    """Whether this requirement is installed, given the extras asked for.
+
+    An `extra == "redis"` marker means "only when redis was requested", so it
+    is a condition to evaluate rather than a reason to skip. Markers about the
+    environment - sys_platform, python_version - are deliberately left alone:
+    they describe where a package installs, not whether it was opted into, and
+    a manifest scanned on a Mac may well be installed on Windows.
+    """
+    marker = requirement.marker
+    if marker is None or "extra" not in str(marker):
+        return True
+
+    # Evaluating with extra="" answers "would this install with no extras?".
+    # Then each requested extra gets its own turn.
+    return any(marker.evaluate({"extra": extra}) for extra in ("", *extras))
+
+
+def _last_release(page: dict) -> datetime | None:
+    """When anything was last published for this project.
+
+    Deliberately the newest upload across every release rather than the date of
+    the version we resolved to: an old pin of a healthy project is a different
+    problem from a project nobody has touched in years.
+    """
+    newest = None
+    for files in (page.get("releases") or {}).values():
+        for entry in files or []:
+            when = _parse_time(entry.get("upload_time_iso_8601"))
+            if when and (newest is None or when > newest):
+                newest = when
+    return newest
+
+
+def _parse_time(raw: str | None) -> datetime | None:
+    """An upload timestamp, or None if PyPI wrote something unreadable."""
+    if not raw:
+        return None
+    try:
+        # PyPI writes a trailing Z, which fromisoformat did not accept until 3.11.
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _requirements(page: dict, extras: frozenset[str] = frozenset()) -> list[Requirement]:
     """Parse requires_dist, which is null for packages with no dependencies.
 
     Optional dependencies are skipped. A requirement guarded by an `extra`
@@ -89,10 +139,9 @@ def _requirements(page: dict) -> list[Requirement]:
         try:
             requirement = Requirement(entry)
         except InvalidRequirement:
-            log.debug("skipping unparseable requirement %r", entry)
             continue
 
-        if requirement.marker and "extra" in str(requirement.marker):
+        if not _is_installed(requirement, extras):
             continue
 
         parsed.append(requirement)
@@ -107,5 +156,9 @@ def _best_match(releases: dict[str, object], spec: SpecifierSet) -> str | None:
             versions.append(Version(raw))
         except InvalidVersion:
             continue
-    matching = list(spec.filter(versions, prereleases=True))
+    # filter() leaves prereleases out unless the specifier names one, and falls
+    # back to them when a project has never shipped anything else. That is what
+    # pip does, and picking an rc the user does not have would mean reporting
+    # vulnerabilities they do not have.
+    matching = list(spec.filter(versions))
     return str(max(matching)) if matching else None

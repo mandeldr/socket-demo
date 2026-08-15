@@ -12,6 +12,7 @@ requires-python = ">=3.10"
 dependencies = [
     "requests>=2.31",
     "packaging>=23.0",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +30,11 @@ packages = ["scanner"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Network tests compare our resolution against uv's. They are deselected by
+# default so the ordinary suite stays offline and fast; run them with
+# `pytest -m network`.
+addopts = "-m 'not network'"
+markers = ["network: compares against a real resolver over the network"]
 
 [tool.mypy]
 python_version = "3.10"
