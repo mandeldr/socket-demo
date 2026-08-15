@@ -7,7 +7,9 @@ on something the JSON does not also carry.
 from datetime import timedelta
 
 from scanner.console import render
+from scanner.enums import SkipReason
 from scanner.graph import DependencyGraph, ResolutionError
+from scanner.models import SkippedLine
 from tests.helpers import (
     NOW,
     graph_with,
@@ -158,3 +160,27 @@ def test_the_header_stays_quiet_when_nothing_repeats() -> None:
 
     assert "2 requirements" in text
     assert "packages)" not in text
+
+
+def test_a_skipped_entry_with_no_line_number_does_not_print_one() -> None:
+    """A requirements.txt line has a number worth printing. A package.json
+    dependency is a key in an object, so `line 0` would be noise pretending to
+    be a location."""
+    report = report_for(
+        graph_with("flask"),
+        {},
+        skipped=[SkippedLine(0, "local-lib@file:./local-lib", SkipReason.LOCAL_PATH)],
+    )
+
+    output = render(report, show_skipped=True)
+
+    assert "local-lib@file:./local-lib  (local path reference)" in output
+    assert "line 0" not in output
+
+
+def test_a_skipped_line_from_a_text_manifest_still_prints_its_number() -> None:
+    report = report_for(
+        graph_with("flask"), {}, skipped=[SkippedLine(4, "-e .", SkipReason.EDITABLE)]
+    )
+
+    assert "line 4: -e .  (editable install)" in render(report, show_skipped=True)

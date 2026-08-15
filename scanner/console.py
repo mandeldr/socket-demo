@@ -137,8 +137,18 @@ def _print_section(console: Console, heading: str, lines: list[str]) -> None:
 
 
 def _skipped_lines(report: dict) -> list[str]:
-    """Manifest lines the scan did not read, with the reason."""
-    return [f"line {x['line']}: {x['content']}  ({x['reason']})" for x in report["skipped"]]
+    """Parts of the manifest the scan did not read, with the reason.
+
+    The line number is dropped when there is not one. A requirements.txt entry
+    lives on a line worth naming; a package.json dependency is a key in an
+    object, and `line 0` would be noise dressed up as a location.
+    """
+    return [
+        f"line {x['line']}: {x['content']}  ({x['reason']})"
+        if x["line"]
+        else f"{x['content']}  ({x['reason']})"
+        for x in report["skipped"]
+    ]
 
 
 def _unmaintained_lines(report: dict) -> list[str]:
