@@ -7,7 +7,7 @@ so they live here rather than being duplicated or imported across test modules.
 from datetime import datetime, timezone
 from pathlib import Path
 
-from scanner.enums import EcoSystem, SkipReason, Source
+from scanner.enums import Ecosystem, SkipReason, Source
 from scanner.graph import DependencyGraph
 from scanner.models import Dependency, PackageKey, ParseResult, SkippedLine, Vulnerability
 from scanner.report import build
@@ -16,7 +16,7 @@ NOW = datetime(2026, 8, 11, tzinfo=timezone.utc)
 
 
 def key(name: str, version: str = "1.0") -> PackageKey:
-    return PackageKey(name, version, EcoSystem.PYTHON)
+    return PackageKey(name, version, Ecosystem.PYTHON)
 
 
 def vulnerability(

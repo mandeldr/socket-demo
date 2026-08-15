@@ -278,3 +278,153 @@ def test_ignoring_a_finding_does_clear_the_exit_code(
     path = manifest(tmp_path, "flask==1.0\n")
 
     assert main([str(path), "--ignore", "CVE-2025-1"]) == EXIT_OK
+
+
+# --- choosing a reader -----------------------------------------------------
+
+
+def npm_project(tmp_path: Path, dependencies: dict, lock_packages: dict) -> Path:
+    (tmp_path / "package.json").write_text(
+        json.dumps({"name": "x", "version": "1.0.0", "dependencies": dependencies})
+    )
+    (tmp_path / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "lockfileVersion": 3,
+                "packages": {"": {"dependencies": dependencies}, **lock_packages},
+            }
+        )
+    )
+    return tmp_path / "package.json"
+
+
+def test_a_package_json_is_read_as_javascript(
+    tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No PyPI lookup happens: the lock already decided every version, so the
+    fake client is never asked and would not know these packages anyway."""
+    path = npm_project(
+        tmp_path,
+        {"a": "^1"},
+        {
+            "node_modules/a": {"version": "1.2.3", "dependencies": {"b": "^2"}},
+            "node_modules/b": {"version": "2.0.0"},
+        },
+    )
+
+    assert main([str(path), "--format", "json"]) == EXIT_OK
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["summary"]["total_packages"] == 2
+    assert report["summary"]["direct"] == 1
+    assert report["summary"]["transitive"] == 1
+
+
+def test_a_lock_file_can_be_given_instead(
+    tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    npm_project(tmp_path, {"a": "^1"}, {"node_modules/a": {"version": "1.2.3"}})
+
+    assert main([str(tmp_path / "package-lock.json"), "--format", "json"]) == EXIT_OK
+
+    assert json.loads(capsys.readouterr().out)["summary"]["total_packages"] == 1
+
+
+def test_a_requirements_file_is_still_read_as_python(
+    tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main([str(manifest(tmp_path, "flask\n")), "--format", "json"]) == EXIT_OK
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["summary"]["total_packages"] == 2  # flask -> click
+
+
+def test_an_unreadable_manifest_is_a_usage_error(
+    tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A package.json with no lock beside it. The message has to carry the fix."""
+    path = tmp_path / "package.json"
+    path.write_text('{"name": "x", "dependencies": {"a": "^1"}}')
+
+    assert main([str(path)]) == EXIT_USAGE_ERROR
+
+    assert "npm install --package-lock-only" in capsys.readouterr().err
+
+
+def test_an_unsupported_lock_file_says_what_is_supported(
+    tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """pnpm is common enough that falling through to "not a requirements file"
+    would be a confusing way to say no."""
+    path = tmp_path / "pnpm-lock.yaml"
+    path.write_text("lockfileVersion: '9.0'\n")
+
+    assert main([str(path)]) == EXIT_USAGE_ERROR
+
+    error = capsys.readouterr().err
+    assert "pnpm-lock.yaml" in error
+    assert "package-lock.json" in error
+
+
+def test_stale_after_says_a_lock_file_carries_no_dates(
+    tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The flag would otherwise report zero stale packages, which reads as
+    "none found" when it means "never looked"."""
+    path = npm_project(tmp_path, {"a": "^1"}, {"node_modules/a": {"version": "1.2.3"}})
+
+    assert main([str(path), "--stale-after", "365", "--format", "json"]) == EXIT_OK
+
+    assert "no release dates" in capsys.readouterr().err
+
+
+def yarn_project(tmp_path: Path, dependencies: dict, lock: str) -> Path:
+    (tmp_path / "package.json").write_text(
+        json.dumps({"name": "x", "version": "1.0.0", "dependencies": dependencies})
+    )
+    (tmp_path / "yarn.lock").write_text(lock)
+    return tmp_path / "package.json"
+
+
+def test_a_package_json_with_a_yarn_lock_is_read(
+    tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = yarn_project(tmp_path, {"ms": "2.0.0"}, 'ms@2.0.0:\n  version "2.0.0"\n')
+
+    assert main([str(path), "--format", "json"]) == EXIT_OK
+
+    assert json.loads(capsys.readouterr().out)["summary"]["total_packages"] == 1
+
+
+def test_a_yarn_lock_can_be_given_instead(
+    tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    yarn_project(tmp_path, {"ms": "2.0.0"}, 'ms@2.0.0:\n  version "2.0.0"\n')
+
+    assert main([str(tmp_path / "yarn.lock"), "--format", "json"]) == EXIT_OK
+
+    assert json.loads(capsys.readouterr().out)["summary"]["total_packages"] == 1
+
+
+def test_npms_lock_wins_when_a_project_has_both(
+    tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Which is what npm itself does. The two locks here disagree on purpose,
+    so the count says which one was read."""
+    yarn_project(tmp_path, {"ms": "2.0.0"}, 'ms@2.0.0:\n  version "2.0.0"\n')
+    (tmp_path / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {"dependencies": {"ms": "2.0.0"}},
+                    "node_modules/ms": {"version": "2.0.0", "dependencies": {"extra": "1"}},
+                    "node_modules/extra": {"version": "1.0.0"},
+                },
+            }
+        )
+    )
+
+    assert main([str(tmp_path / "package.json"), "--format", "json"]) == EXIT_OK
+
+    assert json.loads(capsys.readouterr().out)["summary"]["total_packages"] == 2

@@ -7,7 +7,7 @@ ecosystem `PyPI`, exactly - and one is written for a person to read.
 from enum import Enum
 
 
-class EcoSystem(Enum):
+class Ecosystem(Enum):
     """Package registries we can scan.
 
     The values are the identifiers OSV expects, so `PyPI` is spelled exactly
@@ -32,4 +32,5 @@ class SkipReason(Enum):
     EDITABLE = "editable install"
     VCS = "version control reference"
     DIRECT_URL = "direct URL"
+    LOCAL_PATH = "local path reference"
     INVALID = "could not be parsed"

@@ -9,13 +9,13 @@ from datetime import datetime, timezone
 from packaging.requirements import Requirement
 from packaging.version import Version
 
-from scanner.enums import EcoSystem
+from scanner.enums import Ecosystem
 from scanner.models import Dependency, PackageKey
 from scanner.resolver import PackageMetadata, resolve
 
 
 def key(name: str, version: str | None = "1.0") -> PackageKey:
-    return PackageKey(name, version, EcoSystem.PYTHON)
+    return PackageKey(name, version, Ecosystem.PYTHON)
 
 
 def direct(*names: str) -> list[Dependency]:

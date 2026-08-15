@@ -71,6 +71,22 @@ class DependencyGraph:
         if node and child not in node.children:
             node.children.append(child)
 
+    def link(self, parent: PackageKey | None, child: PackageKey) -> None:
+        """Record how we arrived at a package.
+
+        A package with no parent came from the manifest and is a root;
+        anything else was required by something. Every walk in the project
+        needs this, and every one of them called it before checking whether
+        the package had been seen - because a package reached a second time
+        still gains a requester, and that list is what `dependents_of` reads
+        to name the package a user actually has to upgrade.
+        """
+        if parent is None:
+            if child not in self.roots:
+                self.roots.append(child)
+        else:
+            self.add_edge(parent, child)
+
     def dependents_of(self, key: PackageKey) -> list[PackageKey]:
         """Which packages pull this one in. Answers "why do I have this?".
 

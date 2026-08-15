@@ -1,0 +1,13 @@
+{
+  "name": "yarn-fixture",
+  "version": "1.0.0",
+  "dependencies": {
+    "@babel/core": "^7.0.0",
+    "express": "4.17.1",
+    "lodash.merge": "^4.6.0",
+    "utils": "npm:lodash@4.17.15"
+  },
+  "devDependencies": {
+    "minimist": "0.0.8"
+  }
+}

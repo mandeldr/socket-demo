@@ -13,11 +13,9 @@ and asked by CVE, which returns exactly the advisory wanted.
 import os
 from collections.abc import Iterator
 
-from packaging.utils import canonicalize_name
-
-from scanner.enums import Source
+from scanner.enums import Ecosystem, Source
 from scanner.http import DEFAULT_TIMEOUT, make_session
-from scanner.models import PackageKey, Vulnerability
+from scanner.models import PackageKey, Vulnerability, canonical_name
 from scanner.sources import (
     UNKNOWN_SEVERITY,
     QueryResult,
@@ -26,6 +24,11 @@ from scanner.sources import (
 )
 
 ADVISORIES_URL = "https://api.github.com/advisories"
+
+# GitHub names the ecosystems differently from OSV: PyPI is `pip` here. Kept
+# in this module because enums.py promises its values are the ones OSV expects,
+# and that should stay true.
+GITHUB_ECOSYSTEMS = {Ecosystem.PYTHON: "pip", Ecosystem.NPM: "npm"}
 
 
 class GHSAClient:
@@ -62,7 +65,7 @@ class GHSAClient:
             if error:
                 return QueryResult(filled, error=error)
             if advisory:
-                filled.setdefault(package, []).append(_vulnerability(advisory, package.name))
+                filled.setdefault(package, []).append(_vulnerability(advisory, package))
 
         return QueryResult(filled)
 
@@ -124,9 +127,9 @@ def _error_for(response, has_token: bool) -> str:
     return f"GitHub returned HTTP {response.status_code}"
 
 
-def _vulnerability(advisory: dict, package_name: str) -> Vulnerability:
+def _vulnerability(advisory: dict, package: PackageKey) -> Vulnerability:
     """Turn one advisory into the model the report uses."""
-    patched = _patched_version(advisory, package_name)
+    patched = _patched_version(advisory, package)
     aliases = {i["value"] for i in advisory.get("identifiers") or [] if i.get("value")}
     if advisory.get("cve_id"):
         aliases.add(advisory["cve_id"])
@@ -142,15 +145,25 @@ def _vulnerability(advisory: dict, package_name: str) -> Vulnerability:
     )
 
 
-def _patched_version(advisory: dict, package_name: str) -> str | None:
+def _patched_version(advisory: dict, package: PackageKey) -> str | None:
     """The fix for this package specifically.
 
     One advisory can cover several packages and patch them at different
     versions, so the entry matching the package being enriched is the one that
-    matters.
+    matters - and matching means the ecosystem as well as the name, since a CVE
+    is routinely filed against the npm package and the PyPI one at once.
+
+    An entry with no ecosystem is matched on name alone. Advisories captured
+    before GitHub always sent the field still resolve today, and dropping them
+    would lose fixes we currently report.
     """
+    wanted = GITHUB_ECOSYSTEMS.get(package.ecosystem)
+
     for entry in advisory.get("vulnerabilities") or []:
-        name = canonicalize_name((entry.get("package") or {}).get("name") or "")
-        if name == package_name:
+        named = entry.get("package") or {}
+        ecosystem = named.get("ecosystem")
+        if ecosystem and ecosystem != wanted:
+            continue
+        if canonical_name(named.get("name") or "", package.ecosystem) == package.name:
             return entry.get("first_patched_version") or None
     return None

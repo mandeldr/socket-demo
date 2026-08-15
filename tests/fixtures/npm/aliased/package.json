@@ -1,0 +1,8 @@
+{
+  "name": "aliased-fixture",
+  "version": "1.0.0",
+  "dependencies": {
+    "utils": "npm:lodash@4.17.15",
+    "legacy-debug": "npm:debug@^2.6.0"
+  }
+}

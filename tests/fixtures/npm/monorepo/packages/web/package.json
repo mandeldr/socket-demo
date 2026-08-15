@@ -1,0 +1,6 @@
+{
+  "name": "@acme/web",
+  "version": "1.0.0",
+  "dependencies": { "minimist": "0.0.8" },
+  "peerDependencies": { "react": "^18.0.0" }
+}

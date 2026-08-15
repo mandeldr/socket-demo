@@ -6,6 +6,12 @@ Scans a dependency manifest, resolves direct and transitive dependencies, and
 reports packages linked to known vulnerabilities from OSV.dev and GitHub
 Security Advisories.
 
+| Manifest | Read with |
+|---|---|
+| `requirements.txt` | resolved against PyPI |
+| `package.json` + `package-lock.json` | lockfileVersion 2 and 3 |
+| `package.json` + `yarn.lock` | yarn 1 and berry |
+
 ## Install
 
 ```bash
@@ -20,7 +26,14 @@ Python 3.10 or newer. Tested on 3.10, 3.12 and 3.14.
 
 ```bash
 scanner requirements.txt
+scanner package.json          # reads the lock file sitting beside it
 ```
+
+One argument. Point it at a `package.json` and the lock beside it is found;
+point it at a lock file and the `package.json` is. A `package.json` with no
+lock is refused, with the command that makes one — a range is not something
+that can be scanned, and guessing which version it means would report
+vulnerabilities against packages nobody installed.
 
 Exits `0` when nothing is found and `1` when it finds something, so a CI job
 fails on a vulnerable dependency.
@@ -67,6 +80,29 @@ The remediation line names the package you actually have to change, which is
 not always the vulnerable one: a transitive package is pinned by whatever
 required it, so bumping `urllib3` in the manifest would do nothing here.
 
+The same thing on a JavaScript monorepo, where the package to change is one of
+the project's own workspaces:
+
+```
+package.json
+1 requirements (3 packages)
+57 packages resolved (3 direct, 54 transitive)
+
+9 vulnerable (15.8% of packages), 18 findings
+  CRITICAL 1  HIGH 6  MEDIUM 5  LOW 6
+
+minimist 0.0.8  (via @acme/web)
+  upgrade @acme/web, which requires minimist, to at least 0.2.4
+severity   advisory         fixed in       summary
+────────────────────────────────────────────────────────────────────────────────
+CRITICAL   CVE-2021-44906   1.2.6, 0.2.4   Prototype Pollution in minimist
+```
+
+`1 requirements (3 packages)` is not a typo: the root `package.json` declares
+one dependency, and the two workspace packages are direct as well — they are
+code the project ships rather than something it pulled in, which is how `npm ls`
+counts them too.
+
 `--format json` carries everything the console shows plus the advisory URLs,
 the full dependency path, and the list of manifest lines that were skipped.
 
@@ -74,7 +110,11 @@ the full dependency path, and the list of manifest lines that were skipped.
 
 | Module | Job |
 |---|---|
-| `parsers.py` | manifest text → direct dependencies |
+| `manifests/requirements_txt.py` | manifest text → direct dependencies |
+| `manifests/package_lock.py` | package.json + npm lock → dependency graph |
+| `manifests/yarn_lock.py` | package.json + yarn lock → dependency graph |
+| `manifests/package_json.py` | the manifest both JavaScript readers start from |
+| `manifests/lock_walk.py` | the breadth-first walk both of them share |
 | `resolver.py` | breadth-first walk → dependency graph |
 | `pypi.py` | one request per package for version and requirements |
 | `osv.py` | one request per package for known vulnerabilities |
@@ -83,9 +123,31 @@ the full dependency path, and the list of manifest lines that were skipped.
 | `report.py` | one dictionary — what `--format json` prints |
 | `console.py` | the human version, rendered from that same dictionary |
 
+`manifests/` reads files. Everything else talks to a service, holds the shared
+vocabulary, or renders.
+
 The graph is built once and used twice: as the visited set while walking it,
 and afterwards to explain findings — `path_to` answers "why is this here" and
 `dependents_of` answers "what do I actually upgrade".
+
+### The pipeline forks once, at parsing
+
+```
+                     ┌ requirements.txt ─→ parse ─→ resolve (PyPI) ─┐
+manifest ─→ dispatch ┤                                              ├─→ graph ─→ OSV ─→ GitHub ─→ report
+                     └ package.json + lock ─→ parse ────────────────┘
+```
+
+**A lock file is a resolution somebody already performed and committed**, so
+the JavaScript path skips the resolver entirely. That is not a shortcut, it is
+the only correct answer: `resolver.py` exists to collapse a package name to one
+version, and npm routinely installs several. A three-dependency project put
+`ms` on disk at three versions at once.
+
+The branch is six lines in `cli.py` and is left visible rather than hidden
+behind one uniform call, because the difference between the two paths is the
+interesting part. Everything after the graph — OSV, GitHub, the report, the
+console — never learns there is more than one ecosystem.
 
 ## Design notes
 
@@ -103,6 +165,46 @@ and afterwards to explain findings — `path_to` answers "why is this here" and
 - **`rich`** for the findings table. Forty-eight findings printed four lines each
   is unreadable; as a table it is one line each and long summaries wrap to the
   terminal instead of running off it.
+
+### Why package names are normalized per registry, not once
+
+PyPI folds `.`, `-` and `_` together (PEP 503), so `zope.interface` and
+`zope_interface` are one project. npm does not, and applying PyPI's rule there
+is the worst kind of wrong — measured against live OSV:
+
+```
+lodash.merge  ->  GHSA-2m96-9w4j-wgv7, GHSA-h726-x36v-rx45
+lodash-merge  ->  {}
+```
+
+A package with 30M weekly downloads reporting clean. `canonical_name(name,
+eco_system)` holds the rule, and every place that compares against a package
+name uses it — including the two that match an advisory's own name, where
+getting it wrong deletes the "fixed in" column and the upgrade advice while
+still showing the finding.
+
+### Why the yarn 1 reader is written here rather than imported
+
+Yarn berry writes real YAML and is read with PyYAML. Yarn 1 writes a format
+that only looks like YAML: a parser fails on the first `dependencies:` block,
+whose entries are `name "range"` pairs with no colon.
+
+Both yarn.lock parsers on PyPI were tried. Both get the same thing wrong — a
+single resolution often satisfies several requirements, and yarn writes them as
+one comma separated key:
+
+```
+"@babel/generator@^7.29.7", "@babel/generator@^7.29.8":
+```
+
+Neither library splits it, so a lookup for either range finds nothing. On the
+lock under `tests/fixtures/npm/yarn-v1`: 11 of 94 entries carry a joined key
+covering 22 ranges, and **30 of the 168 edge lookups in the file — 18% — depend
+on splitting them**. Those edges would silently resolve to nothing.
+
+Neither library has shipped a release in over a year, which is the signal this
+tool exists to surface. Twenty lines here, cross-checked against both, was the
+better trade.
 
 ### Why not `pip-requirements-parser`
 
@@ -180,20 +282,64 @@ not determine it, not that it does not matter.
 - **Known vulnerabilities only.** A package with no CVE reports as clean, which is
   not the same as safe — a brand new malicious package has no advisory to find.
 
-## Not yet supported
+### JavaScript specifically
 
-`package.json` and its lock files. The lock file already contains the fully
-resolved tree, so that side is a parsing problem rather than a resolution one.
+- **A lock file is required.** `package.json` alone names ranges, and resolving
+  those means implementing npm's semver grammar and a second resolver. It is
+  refused with `npm install --package-lock-only`, which needs no network. This
+  is a deliberate choice, not an omission: inventing versions a user may not
+  have installed is how a scanner starts reporting things that are not there.
+- **`--stale-after` does nothing.** A lock file carries no release dates. The
+  tool says so rather than reporting zero, which would read as "none found"
+  when it means "never looked".
+- **`lockfileVersion 1`** (npm 6, end of life 2022) is named and refused rather
+  than misread. Its shape is different enough that reading it as a modern lock
+  finds no packages at all.
+- **Aliased packages get imprecise remediation.** `"utils": "npm:lodash@4.17.15"`
+  is correctly identified and scanned as `lodash`, but the advice says to
+  upgrade `lodash` where the manifest key is `utils`. The finding is right; the
+  sentence names the wrong key.
+- **pnpm and bun** are recognised by filename and reported as unsupported,
+  rather than falling through to a complaint about requirements file syntax.
+
+## Verified against other tools
+
+Correctness here is checked against implementations written by other people,
+because a test suite that only asserts the code does what the code was written
+to do will agree with a bug. That is not hypothetical: an earlier resolver bug
+reported 434 of 805 packages at two versions and 295 passing tests said nothing.
+
+- **`uv pip compile`** for `requirements.txt` — on Airflow's 711 pins, 715 of
+  717 versions match and nothing is missed. Run with `pytest -m network`.
+- **`npm ls --all --json --package-lock-only`** for npm locks. It reads the lock
+  offline, so this runs in the ordinary suite. Across three fixtures including
+  OWASP NodeGoat's 1,390 entries: nothing missing, nothing extra, no dangling
+  edges. NodeGoat resolves to 1,073 packages nested twelve deep, with 36 direct
+  — the 16 dependencies and 20 devDependencies its `package.json` declares.
+- **yarn 1 against berry** — `npm ls` cannot read a yarn.lock, so the two
+  formats are checked against each other. Same `package.json`, two files that
+  look nothing alike, same 94 packages and same scan.
+- **Socket's own CLI**, by hand. It agrees on aliases. It differs on workspace
+  packages, naming them by directory where `npm ls` and this tool use the name
+  in their `package.json` — `api` rather than `@acme/api`, and `api` is a real
+  package on the public registry.
 
 ## Development
 
 ```bash
-pytest            # 282 tests, no network — every client takes an injected session
-pytest -m network # compares our resolution against `uv pip compile`
+pytest            # 416 tests, no network — every client takes an injected session
+pytest -m network # 4 more, comparing against `uv pip compile`
 ruff format .
 ruff check .
 mypy scanner/ tests/
 ```
 
-Fixtures under `tests/fixtures/` include `hostile.txt`, which collects the things
-that show up in real requirements files and should not take the scan down.
+The default suite needs `npm` on PATH for the comparison tests and skips them
+without it. It never reaches the network.
+
+Fixtures under `tests/fixtures/` include two collections of things that show up
+in real manifests and should not take a scan down: `hostile.txt` for Python, and
+`npm/hostile/` for JavaScript — an alias, a `file:` path, a git dependency and an
+optional peer nobody installed, in one manifest. `npm/broken` cases live in the
+tests themselves: a byte order mark, a trailing comma, a lock that is a JSON
+array, a dependency cycle.

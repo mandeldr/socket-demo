@@ -4,13 +4,13 @@ The graph answers two questions the report depends on: "what pulled this in"
 (path_to) and "who else needs it" (dependents_of).
 """
 
-from scanner.enums import EcoSystem
+from scanner.enums import Ecosystem
 from scanner.graph import DependencyGraph
 from scanner.models import PackageKey
 
 
 def key(name: str, version: str = "1.0") -> PackageKey:
-    return PackageKey(name, version, EcoSystem.PYTHON)
+    return PackageKey(name, version, Ecosystem.PYTHON)
 
 
 def graph_with(*names: str) -> DependencyGraph:

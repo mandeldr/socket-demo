@@ -15,7 +15,7 @@ from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
 
-from scanner.enums import EcoSystem
+from scanner.enums import Ecosystem
 from scanner.graph import DependencyGraph, ResolutionError
 from scanner.models import Dependency, PackageKey
 
@@ -74,20 +74,6 @@ def _queue_requirements(
         queue.append(_Lookup(name, constraint, extras, depth + 1, requester))
 
 
-def _record_edge(graph: DependencyGraph, parent: PackageKey | None, key: PackageKey) -> None:
-    """Note how we arrived at a package.
-
-    Every requester gets an edge, including ones that arrive after the package
-    was resolved - that is what `dependents_of` reads to say which package a
-    user actually has to upgrade.
-    """
-    if parent is None:
-        if key not in graph.roots:
-            graph.roots.append(key)
-    else:
-        graph.add_edge(parent, key)
-
-
 class _Lookup(NamedTuple):
     """A package waiting to be looked up, and how we got to it.
 
@@ -119,6 +105,15 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
     it. The manifest may pin `adlfs==2024.4.1` while a provider asks for
     `adlfs>=2023.10.0`; answering those separately gives two versions where pip
     installs one, so the constraints are combined before asking.
+
+    This looks like `manifests.walk` and deliberately is not shared with it.
+    The shapes match; the invariants are opposite. This walk is keyed by
+    package name and exists to collapse a name to one version, where a lock
+    file walk is keyed by install location and must keep the several versions
+    npm installs. This one also unifies constraints, asks a registry over the
+    network, and records the packages it could not settle. Merging them would
+    mean one function with switches for behaviour only one caller wants. They
+    share the graph, not the loop.
     """
     graph = DependencyGraph()
     queue = deque(
@@ -148,7 +143,7 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
 
         settled = resolved.get(name)
         if settled is not None:
-            _record_edge(graph, parent, settled)
+            graph.link(parent, settled)
 
             if settled.version and not constraint.contains(settled.version):
                 # Something now wants a version we have already ruled out. Say
@@ -164,17 +159,17 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
         if constraint.is_unsatisfiable():
             # No version can satisfy all of it - `<=0.7.1` beside `==1.5.0`.
             # Record the package so the report can name it, and move on.
-            key = PackageKey(name, None, EcoSystem.PYTHON)
+            key = PackageKey(name, None, Ecosystem.PYTHON)
             resolved[name] = key
-            _record_edge(graph, parent, key)
+            graph.link(parent, key)
             graph.add_node(key, depth, parent=parent, failed=True)
             graph.errors.append(ResolutionError(name, f"conflicting constraints: {constraint}"))
             continue
 
         metadata = fetch(name, constraint, all_extras)
-        key = PackageKey(name, metadata.version, EcoSystem.PYTHON)
+        key = PackageKey(name, metadata.version, Ecosystem.PYTHON)
         resolved[name] = key
-        _record_edge(graph, parent, key)
+        graph.link(parent, key)
         graph.add_node(
             key,
             depth,

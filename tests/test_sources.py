@@ -2,13 +2,13 @@
 
 import pytest
 
-from scanner.enums import EcoSystem, Source
+from scanner.enums import Ecosystem, Source
 from scanner.models import PackageKey, Vulnerability
 from scanner.sources import QueryResult, cve_of, dedupe, merge, normalize_severity
 
 
 def key(name: str, version: str = "1.0") -> PackageKey:
-    return PackageKey(name, version, EcoSystem.PYTHON)
+    return PackageKey(name, version, Ecosystem.PYTHON)
 
 
 def vulnerability(

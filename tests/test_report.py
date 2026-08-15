@@ -9,7 +9,7 @@ from datetime import timedelta
 
 import pytest
 
-from scanner.enums import EcoSystem
+from scanner.enums import Ecosystem
 from scanner.graph import DependencyGraph, ResolutionError
 from scanner.models import PackageKey
 from tests.helpers import (
@@ -334,8 +334,8 @@ def test_an_unreadable_version_is_skipped_rather_than_crashing() -> None:
 
 def test_a_package_with_no_version_has_no_target() -> None:
     graph = DependencyGraph()
-    graph.add_node(PackageKey("thing", None, EcoSystem.PYTHON), depth=0)
-    findings = {PackageKey("thing", None, EcoSystem.PYTHON): [vulnerability(fixes=["2.0"])]}
+    graph.add_node(PackageKey("thing", None, Ecosystem.PYTHON), depth=0)
+    findings = {PackageKey("thing", None, Ecosystem.PYTHON): [vulnerability(fixes=["2.0"])]}
 
     assert report_for(graph, findings)["findings"][0]["upgrade_to"] is None
 

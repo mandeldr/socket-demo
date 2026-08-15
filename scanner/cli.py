@@ -12,8 +12,10 @@ from pathlib import Path
 
 from scanner.console import render
 from scanner.github import GHSAClient
+from scanner.graph import DependencyGraph
+from scanner.manifests import ManifestError, package_lock, requirements_txt, yarn_lock
+from scanner.models import ParseResult
 from scanner.osv import OSVClient
-from scanner.parsers import parse_requirements_txt
 from scanner.pypi import PyPIClient
 from scanner.report import build
 from scanner.resolver import resolve
@@ -25,6 +27,17 @@ from scanner.sources import merge
 EXIT_OK = 0
 EXIT_VULNERABILITIES_FOUND = 1
 EXIT_USAGE_ERROR = 2
+
+# Filenames that mean JavaScript. Any of them is accepted, since they sit in
+# one directory and each names the others.
+PACKAGE_LOCK = "package-lock.json"
+YARN_LOCK = "yarn.lock"
+JAVASCRIPT_MANIFESTS = ("package.json", PACKAGE_LOCK, YARN_LOCK)
+
+# Lock files from package managers this does not read. Named so that pointing
+# at one gets an answer about pnpm rather than a complaint about requirements
+# file syntax.
+UNSUPPORTED_LOCKS = ("pnpm-lock.yaml", "bun.lockb", "shrinkwrap.yaml")
 
 
 def note(message: str) -> None:
@@ -48,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "manifest",
         type=Path,
-        help="path to a requirements.txt manifest",
+        help="path to requirements.txt, or to package.json (its lock file is read from alongside)",
     )
     parser.add_argument(
         "--format",
@@ -88,6 +101,39 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _read(manifest: Path) -> tuple[ParseResult, DependencyGraph]:
+    """Turn a manifest into what it asked for and what that installs.
+
+    The two ecosystems reach the same pair of answers by different routes, and
+    the difference is left visible rather than hidden behind one call: a
+    requirements.txt names ranges that still have to be resolved against PyPI,
+    while a lock file names versions somebody already committed. Pretending
+    they are the same shape would obscure the reason npm needs no resolver.
+    """
+    if manifest.name in JAVASCRIPT_MANIFESTS:
+        return _read_javascript(manifest)
+
+    parsed = requirements_txt.parse(manifest)
+    note("resolving...")
+    return parsed, resolve(parsed.dependencies, PyPIClient().fetch)
+
+
+def _read_javascript(manifest: Path) -> tuple[ParseResult, DependencyGraph]:
+    """Read a package.json with whichever lock file sits beside it.
+
+    npm's lock wins when both are present, which is what npm itself does. A
+    project with neither gets the message naming both, since either one is a
+    fix and we should not assume which tool they use.
+    """
+    directory = manifest.parent
+
+    if manifest.name == YARN_LOCK or (
+        (directory / YARN_LOCK).exists() and not (directory / PACKAGE_LOCK).exists()
+    ):
+        return yarn_lock.parse(manifest)
+    return package_lock.parse(manifest)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the scanner.
 
@@ -107,11 +153,27 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: not a file: {args.manifest}", file=sys.stderr)
         return EXIT_USAGE_ERROR
 
+    if args.manifest.name in UNSUPPORTED_LOCKS:
+        print(
+            f"error: {args.manifest.name} is not supported. "
+            "Supported manifests: requirements.txt, "
+            "package.json (with package-lock.json or yarn.lock)",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE_ERROR
+
     # Everything below reports progress on stderr, so that stdout carries only
     # the report and `scanner --format json | jq` works.
-    parsed = parse_requirements_txt(args.manifest)
-    note("resolving...")
-    graph = resolve(parsed.dependencies, PyPIClient().fetch)
+    try:
+        parsed, graph = _read(args.manifest)
+    except ManifestError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE_ERROR
+
+    if args.stale_after and args.manifest.name in JAVASCRIPT_MANIFESTS:
+        # The flag would otherwise report nothing stale, which reads as "none
+        # found" rather than "never looked".
+        note("note: a lock file carries no release dates, so --stale-after finds nothing")
 
     packages = [node.key for node in graph.nodes.values() if not node.failed]
     note(f"checking {len(packages)} packages against OSV...")

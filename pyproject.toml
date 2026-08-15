@@ -13,6 +13,9 @@ dependencies = [
     "requests>=2.31",
     "packaging>=23.0",
     "rich>=13.0",
+    # Yarn berry writes a real YAML lock file. Yarn 1 does not - that format
+    # only looks like YAML, and is read by hand in manifests/yarn_lock.py.
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -20,13 +23,17 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
     "mypy>=1.11",
+    "types-PyYAML>=6.0",
 ]
 
 [project.scripts]
 scanner = "scanner.cli:main"
 
 [tool.setuptools]
-packages = ["scanner"]
+# Listed explicitly rather than auto-discovered, so a new subpackage has to be
+# added here on purpose. Leaving one out installs a package that imports fine
+# from the source tree and fails from the wheel.
+packages = ["scanner", "scanner.manifests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

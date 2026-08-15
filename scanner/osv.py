@@ -9,11 +9,9 @@ OSV aggregates several databases, so the same CVE usually comes back twice.
 `dedupe` collapses them.
 """
 
-from packaging.utils import canonicalize_name
-
 from scanner.enums import Source
 from scanner.http import DEFAULT_TIMEOUT, make_session
-from scanner.models import PackageKey, Vulnerability
+from scanner.models import PackageKey, Vulnerability, canonical_name
 from scanner.sources import UNKNOWN_SEVERITY, QueryResult, dedupe, normalize_severity
 
 QUERY_URL = "https://api.osv.dev/v1/query"
@@ -50,7 +48,7 @@ class OSVClient:
     def _records(self, package: PackageKey) -> tuple[list[dict] | None, str | None]:
         """Every advisory OSV holds for one package. Returns (records, error)."""
         body = {
-            "package": {"name": package.name, "ecosystem": package.eco_system.value},
+            "package": {"name": package.name, "ecosystem": package.ecosystem.value},
             "version": package.version,
         }
         try:
@@ -126,11 +124,15 @@ def _covers(affected: dict, package: PackageKey) -> bool:
     One advisory routinely spans ecosystems - a jQuery flaw is filed against
     the npm package, the NuGet one, the Ruby gem and the Django that vendors
     it. Their fixed versions are unrelated to ours.
+
+    The name is normalized with the rule for the ecosystem being compared, not
+    PyPI's: `lodash.merge` read as `lodash-merge` matches nothing, and the fix
+    quietly vanishes from a finding we still report.
     """
     named = affected.get("package") or {}
     return (
-        named.get("ecosystem") == package.eco_system.value
-        and canonicalize_name(named.get("name") or "") == package.name
+        named.get("ecosystem") == package.ecosystem.value
+        and canonical_name(named.get("name") or "", package.ecosystem) == package.name
     )
 
 
