@@ -221,7 +221,13 @@ def _installed(manifest: dict, entries: dict[str, Entry]) -> DependencyGraph:
         if lookup in seen:
             continue
         seen.add(lookup)
-        graph.add_node(key, depth, parent=parent)
+
+        # One entry answers several ranges, so two lookups reach one package.
+        # The graph is keyed by package and add_node replaces, so keep the
+        # entry already there: the walk is breadth first, and it was reached by
+        # a shorter route.
+        if key not in graph.nodes:
+            graph.add_node(key, depth, parent=parent)
 
         for target in _required_by(entry.requires, entries):
             queue.append((target, depth + 1, key))

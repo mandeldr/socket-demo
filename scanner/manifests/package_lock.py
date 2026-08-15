@@ -126,7 +126,14 @@ def _installed(entries: dict) -> DependencyGraph:
         if path in seen:
             continue
         seen.add(path)
-        graph.add_node(key, depth, parent=parent)
+
+        # Two paths can hold the same package at the same version - once at the
+        # top and once nested under something that pinned it separately. The
+        # graph is keyed by package, so both arrive at one node, and add_node
+        # replaces. The walk is breadth first, so the entry already there was
+        # reached by a shorter route and is the one to keep.
+        if key not in graph.nodes:
+            graph.add_node(key, depth, parent=parent)
 
         fields = PROJECT_FIELDS if _is_workspace(path) else INSTALLED_PACKAGE_FIELDS
         for target in _paths_required_by(path, entries, packages, fields):

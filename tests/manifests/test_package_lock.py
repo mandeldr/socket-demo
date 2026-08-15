@@ -515,3 +515,54 @@ def test_a_real_monorepo_matches_what_npm_installs() -> None:
 
     assert len(graph.nodes) == 57
     assert sorted(k.name for k in graph.roots) == ["@acme/api", "@acme/web", "lodash"]
+
+
+# --- one package, reached by two routes ------------------------------------
+
+
+def test_a_direct_package_installed_twice_stays_direct(tmp_path: Path) -> None:
+    """npm can install the same name and version at two paths - once at the top
+    and once nested under something that pinned it separately. The graph is
+    keyed by package, so both routes land on one node, and the depth it keeps
+    has to be the shorter one. Otherwise a direct dependency is reported as
+    transitive and the remediation tells the user to upgrade the wrong package.
+    """
+    manifest = write(
+        tmp_path,
+        {"dependencies": {"async": "^2.6.4", "grunt": "^1"}},
+        {
+            "node_modules/async": {"version": "2.6.4"},
+            "node_modules/grunt": {"version": "1.0.0", "dependencies": {"async": "2.6.4"}},
+            "node_modules/grunt/node_modules/async": {"version": "2.6.4"},
+        },
+    )
+
+    _, graph = package_lock.parse(manifest)
+    async_key = next(k for k in graph.nodes if k.name == "async")
+
+    assert graph.nodes[async_key].depth == 0
+
+
+def test_the_direct_count_and_the_roots_agree(tmp_path: Path) -> None:
+    """The report counts nodes at depth 0; the header prints len(roots). Two
+    ways of asking the same question that must not disagree."""
+    manifest = write(
+        tmp_path,
+        {"dependencies": {"async": "^2.6.4", "grunt": "^1"}},
+        {
+            "node_modules/async": {"version": "2.6.4"},
+            "node_modules/grunt": {"version": "1.0.0", "dependencies": {"async": "2.6.4"}},
+            "node_modules/grunt/node_modules/async": {"version": "2.6.4"},
+        },
+    )
+
+    _, graph = package_lock.parse(manifest)
+
+    assert len([n for n in graph.nodes.values() if n.depth == 0]) == len(graph.roots)
+
+
+def test_a_real_lock_keeps_every_root_at_depth_zero() -> None:
+    """NodeGoat installs async@2.6.4 both directly and three levels down."""
+    _, graph = package_lock.parse(FIXTURES / "nodegoat" / "package.json")
+
+    assert len([n for n in graph.nodes.values() if n.depth == 0]) == len(graph.roots) == 36

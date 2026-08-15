@@ -275,3 +275,19 @@ def test_a_real_lock_has_no_dangling_edges(fixture: str) -> None:
     ]
 
     assert dangling == []
+
+
+def test_a_direct_package_reached_again_deeper_stays_direct(tmp_path: Path) -> None:
+    """One yarn entry can answer several ranges, so two lookups reach one
+    package. The shorter route is the one whose depth should survive."""
+    lock = (
+        '"async@^2.6.4", "async@2.6.4":\n  version "2.6.4"\n\n'
+        'grunt@^1:\n  version "1.0.0"\n  dependencies:\n    async "2.6.4"\n'
+    )
+    manifest = project(tmp_path, {"async": "^2.6.4", "grunt": "^1"}, lock)
+
+    _, graph = yarn_lock.parse(manifest)
+    async_key = next(k for k in graph.nodes if k.name == "async")
+
+    assert graph.nodes[async_key].depth == 0
+    assert len([n for n in graph.nodes.values() if n.depth == 0]) == len(graph.roots)
