@@ -13,7 +13,7 @@ from pathlib import Path
 from scanner.console import render
 from scanner.github import GHSAClient
 from scanner.graph import DependencyGraph
-from scanner.manifests import ManifestError, package_lock, requirements_txt
+from scanner.manifests import ManifestError, package_lock, requirements_txt, yarn_lock
 from scanner.models import ParseResult
 from scanner.osv import OSVClient
 from scanner.pypi import PyPIClient
@@ -28,14 +28,16 @@ EXIT_OK = 0
 EXIT_VULNERABILITIES_FOUND = 1
 EXIT_USAGE_ERROR = 2
 
-# Filenames that mean JavaScript. Either half of the pair is accepted, since
-# both sit in the same directory and each names the other.
-JAVASCRIPT_MANIFESTS = ("package.json", "package-lock.json")
+# Filenames that mean JavaScript. Any of them is accepted, since they sit in
+# one directory and each names the others.
+PACKAGE_LOCK = "package-lock.json"
+YARN_LOCK = "yarn.lock"
+JAVASCRIPT_MANIFESTS = ("package.json", PACKAGE_LOCK, YARN_LOCK)
 
 # Lock files from package managers this does not read. Named so that pointing
 # at one gets an answer about pnpm rather than a complaint about requirements
 # file syntax.
-UNSUPPORTED_LOCKS = ("pnpm-lock.yaml", "yarn.lock", "bun.lockb", "shrinkwrap.yaml")
+UNSUPPORTED_LOCKS = ("pnpm-lock.yaml", "bun.lockb", "shrinkwrap.yaml")
 
 
 def note(message: str) -> None:
@@ -109,11 +111,27 @@ def _read(manifest: Path) -> tuple[ParseResult, DependencyGraph]:
     they are the same shape would obscure the reason npm needs no resolver.
     """
     if manifest.name in JAVASCRIPT_MANIFESTS:
-        return package_lock.parse(manifest)
+        return _read_javascript(manifest)
 
     parsed = requirements_txt.parse(manifest)
     note("resolving...")
     return parsed, resolve(parsed.dependencies, PyPIClient().fetch)
+
+
+def _read_javascript(manifest: Path) -> tuple[ParseResult, DependencyGraph]:
+    """Read a package.json with whichever lock file sits beside it.
+
+    npm's lock wins when both are present, which is what npm itself does. A
+    project with neither gets the message naming both, since either one is a
+    fix and we should not assume which tool they use.
+    """
+    directory = manifest.parent
+
+    if manifest.name == YARN_LOCK or (
+        (directory / YARN_LOCK).exists() and not (directory / PACKAGE_LOCK).exists()
+    ):
+        return yarn_lock.parse(manifest)
+    return package_lock.parse(manifest)
 
 
 def main(argv: list[str] | None = None) -> int:

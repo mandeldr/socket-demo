@@ -15,13 +15,12 @@ Three things make it more than a loop over the file:
   so they have to be found separately and their links followed.
 """
 
-import json
 from collections import deque
 from pathlib import Path
 
 from scanner.enums import EcoSystem, SkipReason
 from scanner.graph import DependencyGraph
-from scanner.manifests import ManifestError
+from scanner.manifests import ManifestError, read_json
 from scanner.models import Dependency, PackageKey, ParseResult, SkippedLine
 
 MANIFEST = "package.json"
@@ -53,32 +52,10 @@ def parse(path: Path) -> tuple[ParseResult, DependencyGraph]:
     """
     directory = path.parent
 
-    manifest = _load(directory / MANIFEST)
-    lock = _load(directory / LOCK, missing=f"{MANIFEST} has no {LOCK} beside it; {REGENERATE}")
+    manifest = read_json(directory / MANIFEST)
+    lock = read_json(directory / LOCK, missing=f"{MANIFEST} has no {LOCK} beside it; {REGENERATE}")
 
     return _requested(manifest), _installed(_entries(lock))
-
-
-def _load(path: Path, missing: str | None = None) -> dict:
-    """Read one JSON file, or say why it could not be read.
-
-    utf-8-sig rather than utf-8: a byte order mark is invisible in an editor
-    and makes a plain read refuse the whole file over three bytes nobody can
-    see.
-    """
-    try:
-        text = path.read_text(encoding="utf-8-sig")
-    except OSError:
-        raise ManifestError(missing or f"no such file: {path}") from None
-
-    try:
-        loaded = json.loads(text)
-    except ValueError as exc:
-        raise ManifestError(f"{path.name} is not valid JSON: {exc}") from None
-
-    if not isinstance(loaded, dict):
-        raise ManifestError(f"{path.name} is not a JSON object")
-    return loaded
 
 
 def _entries(lock: dict) -> dict:

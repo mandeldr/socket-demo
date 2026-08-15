@@ -13,6 +13,9 @@ dependencies = [
     "requests>=2.31",
     "packaging>=23.0",
     "rich>=13.0",
+    # Yarn berry writes a real YAML lock file. Yarn 1 does not - that format
+    # only looks like YAML, and is read by hand in manifests/yarn_lock.py.
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +23,7 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
     "mypy>=1.11",
+    "types-PyYAML>=6.0",
 ]
 
 [project.scripts]

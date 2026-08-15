@@ -376,3 +376,55 @@ def test_stale_after_says_a_lock_file_carries_no_dates(
     assert main([str(path), "--stale-after", "365", "--format", "json"]) == EXIT_OK
 
     assert "no release dates" in capsys.readouterr().err
+
+
+def yarn_project(tmp_path: Path, dependencies: dict, lock: str) -> Path:
+    (tmp_path / "package.json").write_text(
+        json.dumps({"name": "x", "version": "1.0.0", "dependencies": dependencies})
+    )
+    (tmp_path / "yarn.lock").write_text(lock)
+    return tmp_path / "package.json"
+
+
+def test_a_package_json_with_a_yarn_lock_is_read(
+    tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = yarn_project(tmp_path, {"ms": "2.0.0"}, 'ms@2.0.0:\n  version "2.0.0"\n')
+
+    assert main([str(path), "--format", "json"]) == EXIT_OK
+
+    assert json.loads(capsys.readouterr().out)["summary"]["total_packages"] == 1
+
+
+def test_a_yarn_lock_can_be_given_instead(
+    tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    yarn_project(tmp_path, {"ms": "2.0.0"}, 'ms@2.0.0:\n  version "2.0.0"\n')
+
+    assert main([str(tmp_path / "yarn.lock"), "--format", "json"]) == EXIT_OK
+
+    assert json.loads(capsys.readouterr().out)["summary"]["total_packages"] == 1
+
+
+def test_npms_lock_wins_when_a_project_has_both(
+    tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Which is what npm itself does. The two locks here disagree on purpose,
+    so the count says which one was read."""
+    yarn_project(tmp_path, {"ms": "2.0.0"}, 'ms@2.0.0:\n  version "2.0.0"\n')
+    (tmp_path / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {"dependencies": {"ms": "2.0.0"}},
+                    "node_modules/ms": {"version": "2.0.0", "dependencies": {"extra": "1"}},
+                    "node_modules/extra": {"version": "1.0.0"},
+                },
+            }
+        )
+    )
+
+    assert main([str(tmp_path / "package.json"), "--format", "json"]) == EXIT_OK
+
+    assert json.loads(capsys.readouterr().out)["summary"]["total_packages"] == 2

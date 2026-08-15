@@ -6,6 +6,9 @@ to be resolved against a registry, while a lock file names versions somebody
 already committed, so it can hand back a finished graph.
 """
 
+import json
+from pathlib import Path
+
 
 class ManifestError(Exception):
     """A manifest that could not be read at all.
@@ -18,3 +21,28 @@ class ManifestError(Exception):
     The message is written for the person running the tool, and names the
     command that fixes the problem wherever there is one.
     """
+
+
+def read_json(path: Path, missing: str | None = None) -> dict:
+    """Read one JSON manifest, or say why it could not be read.
+
+    Both lock readers start from the same package.json, so the rules for
+    reading it live here rather than in each of them.
+
+    utf-8-sig rather than utf-8: a byte order mark is invisible in an editor
+    and makes a plain read reject the whole file over three bytes nobody can
+    see.
+    """
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        raise ManifestError(missing or f"no such file: {path}") from None
+
+    try:
+        loaded = json.loads(text)
+    except ValueError as exc:
+        raise ManifestError(f"{path.name} is not valid JSON: {exc}") from None
+
+    if not isinstance(loaded, dict):
+        raise ManifestError(f"{path.name} is not a JSON object")
+    return loaded
