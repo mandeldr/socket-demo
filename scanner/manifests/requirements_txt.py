@@ -1,4 +1,4 @@
-"""Reading a manifest into the requirements it asks for.
+"""Reading a requirements.txt into the requirements it asks for.
 
 Lines that are not requirements - pip options, editable installs, VCS and URL
 references - are recorded with a reason rather than dropped, so the report can
@@ -22,7 +22,7 @@ from scanner.models import Dependency, ParseResult, SkippedLine
 COMMENT_RE = re.compile(r"(^|\s+)#.*$")
 
 
-def parse_requirements_txt(path: Path) -> ParseResult:
+def parse(path: Path) -> ParseResult:
     """Parse a pip requirements file into direct dependencies.
 
     Lines that are not requirements are recorded with a reason rather than

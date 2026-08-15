@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from packaging.utils import canonicalize_name
 
-from scanner.parsers import parse_requirements_txt
+from scanner.manifests import requirements_txt
 from scanner.pypi import PyPIClient
 from scanner.resolver import resolve
 
@@ -46,7 +46,7 @@ def what_uv_would_install(manifest: Path) -> dict[str, str]:
 
 
 def what_we_resolve(manifest: Path) -> dict[str, set[str | None]]:
-    graph = resolve(parse_requirements_txt(manifest).dependencies, PyPIClient().fetch)
+    graph = resolve(requirements_txt.parse(manifest).dependencies, PyPIClient().fetch)
     resolved: dict[str, set[str | None]] = {}
     for node in graph.nodes.values():
         if not node.failed:

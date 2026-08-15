@@ -12,8 +12,8 @@ from pathlib import Path
 
 from scanner.console import render
 from scanner.github import GHSAClient
+from scanner.manifests import requirements_txt
 from scanner.osv import OSVClient
-from scanner.parsers import parse_requirements_txt
 from scanner.pypi import PyPIClient
 from scanner.report import build
 from scanner.resolver import resolve
@@ -109,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Everything below reports progress on stderr, so that stdout carries only
     # the report and `scanner --format json | jq` works.
-    parsed = parse_requirements_txt(args.manifest)
+    parsed = requirements_txt.parse(args.manifest)
     note("resolving...")
     graph = resolve(parsed.dependencies, PyPIClient().fetch)
 
