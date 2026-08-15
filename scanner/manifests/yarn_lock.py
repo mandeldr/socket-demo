@@ -18,14 +18,10 @@ import yaml
 
 from scanner.enums import EcoSystem
 from scanner.graph import DependencyGraph
-from scanner.manifests import (
-    MANIFEST,
-    YARN_PROJECT_FIELDS,
-    ManifestError,
-    read_json,
-    requested,
-    walk,
-)
+from scanner.manifests import ManifestError, package_json
+from scanner.manifests.lock_walk import walk
+from scanner.manifests.package_json import YARN_FIELDS as PROJECT_FIELDS
+from scanner.manifests.package_json import requested
 from scanner.models import PackageKey, ParseResult
 
 LOCK = "yarn.lock"
@@ -39,10 +35,6 @@ NPM_PROTOCOL = "npm:"
 
 # Berry's file header. It parses as an entry and is not a package.
 METADATA_KEY = "__metadata"
-
-# What the project asks for. Named in manifests/__init__ beside npm's, because
-# the two differ by one field for a reason worth seeing.
-PROJECT_FIELDS = YARN_PROJECT_FIELDS
 
 
 class Entry(NamedTuple):
@@ -58,7 +50,7 @@ def parse(path: Path) -> tuple[ParseResult, DependencyGraph]:
     """Read a package.json and the yarn.lock beside it."""
     directory = path.parent
 
-    manifest = read_json(directory / MANIFEST)
+    manifest = package_json.load(directory / package_json.NAME)
     entries = _entries(_read_lock(directory / LOCK))
 
     return requested(manifest, PROJECT_FIELDS), _installed(manifest, entries)
@@ -68,7 +60,7 @@ def _read_lock(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8-sig")
     except OSError:
-        raise ManifestError(f"{MANIFEST} has no {LOCK} beside it; {REGENERATE}") from None
+        raise ManifestError(f"{package_json.NAME} has no {LOCK} beside it; {REGENERATE}") from None
 
 
 def _entries(text: str) -> dict[str, Entry]:
@@ -77,8 +69,8 @@ def _entries(text: str) -> dict[str, Entry]:
 
     entries: dict[str, Entry] = {}
     for descriptor, (version, requires) in raw.items():
-        name, spec = _split(descriptor)
-        entries[_key(name, spec)] = Entry(_registry_name(name, spec), version, requires)
+        name, spec = _split_descriptor(descriptor)
+        entries[_descriptor(name, spec)] = Entry(_registry_name(name, spec), version, requires)
     return entries
 
 
@@ -155,7 +147,7 @@ def _v1_entries(text: str) -> dict[str, tuple[str, dict[str, str]]]:
     return entries
 
 
-def _split(descriptor: str) -> tuple[str, str]:
+def _split_descriptor(descriptor: str) -> tuple[str, str]:
     """`express@4.17.1` -> ("express", "4.17.1").
 
     Split on the first `@` after position zero, so a scope survives:
@@ -168,7 +160,7 @@ def _split(descriptor: str) -> tuple[str, str]:
     return descriptor[:at], descriptor[at + 1 :]
 
 
-def _key(name: str, spec: str) -> str:
+def _descriptor(name: str, spec: str) -> str:
     """How a requirement is looked up, in either format."""
     return f"{name}@{_without_protocol(spec)}"
 
@@ -222,5 +214,5 @@ def _lookups_for(requires: dict[str, str], entries: dict[str, Entry]) -> list[st
     A requirement with no entry is dropped rather than reported: an optional
     dependency yarn chose not to install is the ordinary reason.
     """
-    keys = [_key(name, spec) for name, spec in requires.items()]
+    keys = [_descriptor(name, spec) for name, spec in requires.items()]
     return [key for key in keys if key in entries]

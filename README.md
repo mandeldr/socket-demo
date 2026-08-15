@@ -113,6 +113,8 @@ the full dependency path, and the list of manifest lines that were skipped.
 | `manifests/requirements_txt.py` | manifest text → direct dependencies |
 | `manifests/package_lock.py` | package.json + npm lock → dependency graph |
 | `manifests/yarn_lock.py` | package.json + yarn lock → dependency graph |
+| `manifests/package_json.py` | the manifest both JavaScript readers start from |
+| `manifests/lock_walk.py` | the breadth-first walk both of them share |
 | `resolver.py` | breadth-first walk → dependency graph |
 | `pypi.py` | one request per package for version and requirements |
 | `osv.py` | one request per package for known vulnerabilities |

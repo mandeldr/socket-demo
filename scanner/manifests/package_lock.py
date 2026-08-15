@@ -19,14 +19,13 @@ from pathlib import Path
 
 from scanner.enums import EcoSystem
 from scanner.graph import DependencyGraph
-from scanner.manifests import (
-    MANIFEST,
-    NPM_PROJECT_FIELDS,
-    ManifestError,
-    read_json,
-    requested,
-    walk,
-)
+from scanner.manifests import ManifestError, package_json
+from scanner.manifests.lock_walk import walk
+
+# Aliased so the contrast below reads as project versus installed package,
+# which is the distinction this file cares about.
+from scanner.manifests.package_json import NPM_FIELDS as PROJECT_FIELDS
+from scanner.manifests.package_json import requested
 from scanner.models import PackageKey, ParseResult
 
 LOCK = "package-lock.json"
@@ -40,10 +39,6 @@ REGENERATE = "run `npm install --package-lock-only` to generate one"
 # on anyone's.
 INSTALLED_PACKAGE_FIELDS = ("dependencies", "optionalDependencies", "peerDependencies")
 
-# What the project itself pulls in. Named in manifests/__init__ beside yarn's,
-# because the two differ by one field for a reason worth seeing.
-PROJECT_FIELDS = NPM_PROJECT_FIELDS
-
 
 def parse(path: Path) -> tuple[ParseResult, DependencyGraph]:
     """Read a package.json and its lock file.
@@ -55,13 +50,15 @@ def parse(path: Path) -> tuple[ParseResult, DependencyGraph]:
     """
     directory = path.parent
 
-    manifest = read_json(directory / MANIFEST)
-    lock = read_json(directory / LOCK, missing=f"{MANIFEST} has no {LOCK} beside it; {REGENERATE}")
+    manifest = package_json.load(directory / package_json.NAME)
+    lock = package_json.load(
+        directory / LOCK, missing=f"{package_json.NAME} has no {LOCK} beside it; {REGENERATE}"
+    )
 
-    return requested(manifest, PROJECT_FIELDS), _installed(_entries(lock))
+    return requested(manifest, PROJECT_FIELDS), _installed(_package_map(lock))
 
 
-def _entries(lock: dict) -> dict:
+def _package_map(lock: dict) -> dict:
     """The lock's package map, or an explanation of why there is not one.
 
     npm 6 wrote an entirely different shape, keyed by name with the tree nested
@@ -86,7 +83,9 @@ def _installed(entries: dict) -> DependencyGraph:
     several of them and the path is what decides which copy a requirement sees.
     """
     packages = {
-        path: _key(path, entry) for path, entry in entries.items() if _is_package(path, entry)
+        path: _package_key(path, entry)
+        for path, entry in entries.items()
+        if _is_package(path, entry)
     }
 
     def required_by(path: str) -> list[str]:
@@ -134,7 +133,7 @@ def _paths_required_by(
     reason, and it is not a fault in the manifest.
     """
     found = []
-    for name in _required_by(entries[requirer], fields):
+    for name in _names_required_by(entries[requirer], fields):
         path = _copy_visible_to(requirer, name, entries)
         if path and path in packages:
             found.append(path)
@@ -150,7 +149,7 @@ def _is_package(install_path: str, entry: dict) -> bool:
     return bool(install_path) and not entry.get("link") and bool(entry.get("version"))
 
 
-def _key(install_path: str, entry: dict) -> PackageKey:
+def _package_key(install_path: str, entry: dict) -> PackageKey:
     return PackageKey(_package_name(install_path, entry), entry["version"], EcoSystem.NPM)
 
 
@@ -168,7 +167,7 @@ def _package_name(install_path: str, entry: dict) -> str:
     return install_path.rsplit("node_modules/", 1)[-1]
 
 
-def _required_by(entry: dict, fields: tuple[str, ...]) -> list[str]:
+def _names_required_by(entry: dict, fields: tuple[str, ...]) -> list[str]:
     """The packages one entry pulls in, across the fields that apply to it."""
     return [name for field in fields for name in (entry.get(field) or {})]
 
