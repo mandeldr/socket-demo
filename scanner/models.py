@@ -9,10 +9,10 @@ from dataclasses import dataclass, field
 
 from packaging.utils import canonicalize_name
 
-from scanner.enums import EcoSystem, SkipReason, Source
+from scanner.enums import Ecosystem, SkipReason, Source
 
 
-def canonical_name(name: str, eco_system: EcoSystem) -> str:
+def canonical_name(name: str, ecosystem: Ecosystem) -> str:
     """Normalize a package name the way its own registry does.
 
     The two rules are not interchangeable, and using the wrong one is silent.
@@ -23,7 +23,7 @@ def canonical_name(name: str, eco_system: EcoSystem) -> str:
     told, truthfully, that it has no vulnerabilities.
     """
     name = name.strip()
-    if eco_system is EcoSystem.PYTHON:
+    if ecosystem is Ecosystem.PYTHON:
         # PEP 503 canonical form: lowercase, runs of -_. collapsed to a single -
         return str(canonicalize_name(name))
 
@@ -42,7 +42,7 @@ class PackageKey:
     # specifier at all). Such a package cannot be queried against an advisory
     # database until resolution picks a concrete version for it.
     version: str | None
-    eco_system: EcoSystem
+    ecosystem: Ecosystem
 
     def __post_init__(self) -> None:
         """Normalize the package name so equivalent spellings compare equal.
@@ -52,7 +52,7 @@ class PackageKey:
         has to use the same one.
         """
         # Bypass the frozen dataclass restriction during initialization only
-        object.__setattr__(self, "name", canonical_name(self.name, self.eco_system))
+        object.__setattr__(self, "name", canonical_name(self.name, self.ecosystem))
 
 
 @dataclass
@@ -70,9 +70,12 @@ class Dependency:
 
 @dataclass
 class SkippedLine:
-    """A manifest line the parser did not turn into a requirement."""
+    """Something in a manifest that did not turn into a requirement."""
 
-    line_number: int
+    # None when the format has no lines to point at: a package.json dependency
+    # is a key in an object, and reporting it as line 0 would be a location
+    # that does not exist.
+    line_number: int | None
     content: str
     reason: SkipReason
 

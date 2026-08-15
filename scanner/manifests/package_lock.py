@@ -17,7 +17,7 @@ Three things make it more than a loop over the file:
 
 from pathlib import Path
 
-from scanner.enums import EcoSystem
+from scanner.enums import Ecosystem
 from scanner.graph import DependencyGraph
 from scanner.manifests import ManifestError, package_json
 from scanner.manifests.lock_walk import walk
@@ -150,7 +150,7 @@ def _is_package(install_path: str, entry: dict) -> bool:
 
 
 def _package_key(install_path: str, entry: dict) -> PackageKey:
-    return PackageKey(_package_name(install_path, entry), entry["version"], EcoSystem.NPM)
+    return PackageKey(_package_name(install_path, entry), entry["version"], Ecosystem.NPM)
 
 
 def _package_name(install_path: str, entry: dict) -> str:

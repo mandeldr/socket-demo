@@ -156,7 +156,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.manifest.name in UNSUPPORTED_LOCKS:
         print(
             f"error: {args.manifest.name} is not supported. "
-            f"Supported manifests: requirements.txt, package.json (with package-lock.json)",
+            "Supported manifests: requirements.txt, "
+            "package.json (with package-lock.json or yarn.lock)",
             file=sys.stderr,
         )
         return EXIT_USAGE_ERROR

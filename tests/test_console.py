@@ -169,7 +169,7 @@ def test_a_skipped_entry_with_no_line_number_does_not_print_one() -> None:
     report = report_for(
         graph_with("flask"),
         {},
-        skipped=[SkippedLine(0, "local-lib@file:./local-lib", SkipReason.LOCAL_PATH)],
+        skipped=[SkippedLine(None, "local-lib@file:./local-lib", SkipReason.LOCAL_PATH)],
     )
 
     output = render(report, show_skipped=True)

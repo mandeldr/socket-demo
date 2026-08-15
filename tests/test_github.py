@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from scanner.enums import EcoSystem, Source
+from scanner.enums import Ecosystem, Source
 from scanner.github import GHSAClient, _is_complete, _patched_version, _vulnerability
 from scanner.models import PackageKey, Vulnerability
 
@@ -19,7 +19,7 @@ ADVISORY = next(a for a in ADVISORIES if a["ghsa_id"] == "GHSA-pq67-6m6q-mj2v")
 
 
 def key(name: str, version: str = "1.0") -> PackageKey:
-    return PackageKey(name, version, EcoSystem.PYTHON)
+    return PackageKey(name, version, Ecosystem.PYTHON)
 
 
 def gap(
@@ -178,7 +178,7 @@ def test_a_sparse_advisory_does_not_crash() -> None:
 
 
 def npm_key(name: str, version: str = "1.0") -> PackageKey:
-    return PackageKey(name, version, EcoSystem.NPM)
+    return PackageKey(name, version, Ecosystem.NPM)
 
 
 def test_a_fix_from_another_ecosystem_is_ignored() -> None:
@@ -194,7 +194,7 @@ def test_a_fix_from_another_ecosystem_is_ignored() -> None:
 
 
 def test_the_python_ecosystem_is_spelled_the_way_github_spells_it() -> None:
-    """GitHub says `pip` where OSV says `PyPI`, so EcoSystem.value cannot be
+    """GitHub says `pip` where OSV says `PyPI`, so Ecosystem.value cannot be
     compared to this field directly."""
     advisory = {
         "vulnerabilities": [

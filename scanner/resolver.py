@@ -15,7 +15,7 @@ from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
 
-from scanner.enums import EcoSystem
+from scanner.enums import Ecosystem
 from scanner.graph import DependencyGraph, ResolutionError
 from scanner.models import Dependency, PackageKey
 
@@ -159,7 +159,7 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
         if constraint.is_unsatisfiable():
             # No version can satisfy all of it - `<=0.7.1` beside `==1.5.0`.
             # Record the package so the report can name it, and move on.
-            key = PackageKey(name, None, EcoSystem.PYTHON)
+            key = PackageKey(name, None, Ecosystem.PYTHON)
             resolved[name] = key
             graph.link(parent, key)
             graph.add_node(key, depth, parent=parent, failed=True)
@@ -167,7 +167,7 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
             continue
 
         metadata = fetch(name, constraint, all_extras)
-        key = PackageKey(name, metadata.version, EcoSystem.PYTHON)
+        key = PackageKey(name, metadata.version, Ecosystem.PYTHON)
         resolved[name] = key
         graph.link(parent, key)
         graph.add_node(

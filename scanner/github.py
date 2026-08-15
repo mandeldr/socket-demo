@@ -13,7 +13,7 @@ and asked by CVE, which returns exactly the advisory wanted.
 import os
 from collections.abc import Iterator
 
-from scanner.enums import EcoSystem, Source
+from scanner.enums import Ecosystem, Source
 from scanner.http import DEFAULT_TIMEOUT, make_session
 from scanner.models import PackageKey, Vulnerability, canonical_name
 from scanner.sources import (
@@ -28,7 +28,7 @@ ADVISORIES_URL = "https://api.github.com/advisories"
 # GitHub names the ecosystems differently from OSV: PyPI is `pip` here. Kept
 # in this module because enums.py promises its values are the ones OSV expects,
 # and that should stay true.
-GITHUB_ECOSYSTEMS = {EcoSystem.PYTHON: "pip", EcoSystem.NPM: "npm"}
+GITHUB_ECOSYSTEMS = {Ecosystem.PYTHON: "pip", Ecosystem.NPM: "npm"}
 
 
 class GHSAClient:
@@ -157,13 +157,13 @@ def _patched_version(advisory: dict, package: PackageKey) -> str | None:
     before GitHub always sent the field still resolve today, and dropping them
     would lose fixes we currently report.
     """
-    wanted = GITHUB_ECOSYSTEMS.get(package.eco_system)
+    wanted = GITHUB_ECOSYSTEMS.get(package.ecosystem)
 
     for entry in advisory.get("vulnerabilities") or []:
         named = entry.get("package") or {}
         ecosystem = named.get("ecosystem")
         if ecosystem and ecosystem != wanted:
             continue
-        if canonical_name(named.get("name") or "", package.eco_system) == package.name:
+        if canonical_name(named.get("name") or "", package.ecosystem) == package.name:
             return entry.get("first_patched_version") or None
     return None

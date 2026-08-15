@@ -48,7 +48,7 @@ class OSVClient:
     def _records(self, package: PackageKey) -> tuple[list[dict] | None, str | None]:
         """Every advisory OSV holds for one package. Returns (records, error)."""
         body = {
-            "package": {"name": package.name, "ecosystem": package.eco_system.value},
+            "package": {"name": package.name, "ecosystem": package.ecosystem.value},
             "version": package.version,
         }
         try:
@@ -131,8 +131,8 @@ def _covers(affected: dict, package: PackageKey) -> bool:
     """
     named = affected.get("package") or {}
     return (
-        named.get("ecosystem") == package.eco_system.value
-        and canonical_name(named.get("name") or "", package.eco_system) == package.name
+        named.get("ecosystem") == package.ecosystem.value
+        and canonical_name(named.get("name") or "", package.ecosystem) == package.name
     )
 
 

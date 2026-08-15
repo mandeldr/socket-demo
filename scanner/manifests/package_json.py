@@ -67,7 +67,7 @@ def requested(manifest: dict, fields: tuple[str, ...]) -> ParseResult:
             if spec.startswith(LOCAL_PREFIXES):
                 # Somewhere on disk, so there is no release to look up. Recorded
                 # rather than dropped, so the report can say what it did not read.
-                result.skipped.append(SkippedLine(0, f"{name}@{spec}", SkipReason.LOCAL_PATH))
+                result.skipped.append(SkippedLine(None, f"{name}@{spec}", SkipReason.LOCAL_PATH))
             else:
                 result.dependencies.append(Dependency(name=name, raw_spec=spec))
 

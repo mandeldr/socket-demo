@@ -16,7 +16,7 @@ from typing import NamedTuple
 
 import yaml
 
-from scanner.enums import EcoSystem
+from scanner.enums import Ecosystem
 from scanner.graph import DependencyGraph
 from scanner.manifests import ManifestError, package_json
 from scanner.manifests.lock_walk import walk
@@ -37,7 +37,7 @@ NPM_PROTOCOL = "npm:"
 METADATA_KEY = "__metadata"
 
 
-class Entry(NamedTuple):
+class _Entry(NamedTuple):
     """One resolution: what it turned out to be, and what it needs."""
 
     name: str
@@ -63,14 +63,14 @@ def _read_lock(path: Path) -> str:
         raise ManifestError(f"{package_json.NAME} has no {LOCK} beside it; {REGENERATE}") from None
 
 
-def _entries(text: str) -> dict[str, Entry]:
+def _entries(text: str) -> dict[str, _Entry]:
     """The lock as one map, keyed by the requirement each entry answers."""
     raw = _berry_entries(text) if _is_berry(text) else _v1_entries(text)
 
-    entries: dict[str, Entry] = {}
+    entries: dict[str, _Entry] = {}
     for descriptor, (version, requires) in raw.items():
         name, spec = _split_descriptor(descriptor)
-        entries[_descriptor(name, spec)] = Entry(_registry_name(name, spec), version, requires)
+        entries[_descriptor(name, spec)] = _Entry(_registry_name(name, spec), version, requires)
     return entries
 
 
@@ -184,7 +184,7 @@ def _registry_name(name: str, spec: str) -> str:
     return name
 
 
-def _installed(manifest: dict, entries: dict[str, Entry]) -> DependencyGraph:
+def _installed(manifest: dict, entries: dict[str, _Entry]) -> DependencyGraph:
     """Walk the lock into a graph.
 
     A location here is a `name@range` key, because that is what an entry
@@ -193,7 +193,7 @@ def _installed(manifest: dict, entries: dict[str, Entry]) -> DependencyGraph:
 
     def package_at(lookup: str) -> PackageKey:
         entry = entries[lookup]
-        return PackageKey(entry.name, entry.version, EcoSystem.NPM)
+        return PackageKey(entry.name, entry.version, Ecosystem.NPM)
 
     def required_by(lookup: str) -> list[str]:
         return _lookups_for(entries[lookup].requires, entries)
@@ -208,7 +208,7 @@ def _direct(manifest: dict) -> dict[str, str]:
     }
 
 
-def _lookups_for(requires: dict[str, str], entries: dict[str, Entry]) -> list[str]:
+def _lookups_for(requires: dict[str, str], entries: dict[str, _Entry]) -> list[str]:
     """The lookup key for each requirement that the lock actually answers.
 
     A requirement with no entry is dropped rather than reported: an optional

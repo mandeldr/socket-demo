@@ -7,7 +7,7 @@ API, so these run against the shape OSV actually returns.
 import json
 from pathlib import Path
 
-from scanner.enums import EcoSystem, Source
+from scanner.enums import Ecosystem, Source
 from scanner.models import PackageKey
 from scanner.osv import OSVClient, _fixed_versions, _severity, _vulnerability
 
@@ -16,7 +16,7 @@ RECORD = json.loads((FIXTURES / "vuln-GHSA-pq67-6m6q-mj2v.json").read_text())
 
 
 def key(name: str, version: str | None = "1.0") -> PackageKey:
-    return PackageKey(name, version, EcoSystem.PYTHON)
+    return PackageKey(name, version, Ecosystem.PYTHON)
 
 
 class FakeResponse:
@@ -322,7 +322,7 @@ def test_a_dotted_npm_name_still_finds_its_fix() -> None:
             }
         ]
     }
-    npm_key = PackageKey("lodash.merge", "4.6.0", EcoSystem.NPM)
+    npm_key = PackageKey("lodash.merge", "4.6.0", Ecosystem.NPM)
 
     assert _fixed_versions(record, npm_key) == ["4.6.1"]
 
@@ -336,4 +336,4 @@ def test_an_npm_name_is_matched_case_insensitively() -> None:
             }
         ]
     }
-    assert _fixed_versions(record, PackageKey("base64", "0.9", EcoSystem.NPM)) == ["1.0.0"]
+    assert _fixed_versions(record, PackageKey("base64", "0.9", Ecosystem.NPM)) == ["1.0.0"]

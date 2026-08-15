@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from scanner.enums import EcoSystem, SkipReason
+from scanner.enums import Ecosystem, SkipReason
 from scanner.manifests import package_lock
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "npm"
@@ -76,7 +76,7 @@ def test_packages_are_npm_packages(tmp_path: Path) -> None:
     _, graph = package_lock.parse(manifest)
 
     (node,) = graph.nodes.values()
-    assert node.key.eco_system is EcoSystem.NPM
+    assert node.key.ecosystem is Ecosystem.NPM
 
 
 def test_a_scoped_package_keeps_its_scope(tmp_path: Path) -> None:
