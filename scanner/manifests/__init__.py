@@ -7,7 +7,19 @@ already committed, so it can hand back a finished graph.
 """
 
 import json
+from collections import deque
+from collections.abc import Callable
 from pathlib import Path
+
+from scanner.enums import SkipReason
+from scanner.graph import DependencyGraph
+from scanner.models import Dependency, PackageKey, ParseResult, SkippedLine
+
+MANIFEST = "package.json"
+
+# A specifier naming somewhere on disk rather than a release on a registry.
+# `portal:` is yarn's; the rest are shared.
+LOCAL_PREFIXES = ("file:", "link:", "workspace:", "portal:")
 
 
 class ManifestError(Exception):
@@ -46,3 +58,74 @@ def read_json(path: Path, missing: str | None = None) -> dict:
     if not isinstance(loaded, dict):
         raise ManifestError(f"{path.name} is not a JSON object")
     return loaded
+
+
+def requested(manifest: dict, fields: tuple[str, ...]) -> ParseResult:
+    """What a package.json asked for, before any lock decided versions.
+
+    `fields` differs between the two readers because npm and yarn disagree on
+    whether a project's own peerDependencies count as something it asked for.
+    """
+    result = ParseResult()
+
+    for field in fields:
+        for name, spec in (manifest.get(field) or {}).items():
+            if spec.startswith(LOCAL_PREFIXES):
+                # Somewhere on disk, so there is no release to look up. Recorded
+                # rather than dropped, so the report can say what it did not read.
+                result.skipped.append(SkippedLine(0, f"{name}@{spec}", SkipReason.LOCAL_PATH))
+            else:
+                result.dependencies.append(Dependency(name=name, raw_spec=spec))
+
+    return result
+
+
+def walk(
+    roots: list[str],
+    package_at: Callable[[str], PackageKey],
+    required_by: Callable[[str], list[str]],
+) -> DependencyGraph:
+    """Turn a lock file into a graph, breadth first from the direct dependencies.
+
+    Both lock formats need the same walk, because a lock has already decided
+    every version - following it is just "for each requirement, go to the entry
+    that answers it". Only two things differ, and they are the arguments: how a
+    location in the file names a package, and where that location's own
+    requirements point.
+
+    A `location` is whatever the format uses to identify one entry: an install
+    path for npm, since the same package sits at several; a `name@range` key
+    for yarn, since that is what an entry answers to.
+
+    Breadth first so `depth` ends up the shortest route to each package, which
+    is the most useful answer to "why is this here".
+    """
+    graph = DependencyGraph()
+    queue: deque[tuple[str, int, PackageKey | None]] = deque(
+        (location, 0, None) for location in roots
+    )
+    seen: set[str] = set()
+
+    while queue:
+        location, depth, parent = queue.popleft()
+        package = package_at(location)
+
+        # Before the visited check, so every requester gets an edge and not
+        # just the first one to arrive.
+        graph.link(parent, package)
+
+        if location in seen:
+            continue
+        seen.add(location)
+
+        # One package can sit at two locations - installed twice at the same
+        # version, or answering two ranges. The graph is keyed by package and
+        # add_node replaces, so keep whatever is already there: this walk is
+        # breadth first, so it arrived by a shorter route.
+        if package not in graph.nodes:
+            graph.add_node(package, depth, parent=parent)
+
+        for target in required_by(location):
+            queue.append((target, depth + 1, package))
+
+    return graph

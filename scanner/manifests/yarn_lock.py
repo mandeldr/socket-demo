@@ -11,18 +11,16 @@ and berry writes real YAML with a different shape again. They are normalized
 into one map of `name@range` -> entry, after which the walk is shared.
 """
 
-from collections import deque
 from pathlib import Path
 from typing import NamedTuple
 
 import yaml
 
-from scanner.enums import EcoSystem, SkipReason
+from scanner.enums import EcoSystem
 from scanner.graph import DependencyGraph
-from scanner.manifests import ManifestError, read_json
-from scanner.models import Dependency, PackageKey, ParseResult, SkippedLine
+from scanner.manifests import MANIFEST, ManifestError, read_json, requested, walk
+from scanner.models import PackageKey, ParseResult
 
-MANIFEST = "package.json"
 LOCK = "yarn.lock"
 
 REGENERATE = "run `yarn install` to generate one"
@@ -38,8 +36,6 @@ METADATA_KEY = "__metadata"
 # What the project asks for. Yarn installs the project's own devDependencies,
 # exactly as npm does.
 PROJECT_FIELDS = ("dependencies", "devDependencies", "optionalDependencies")
-
-LOCAL_PREFIXES = ("file:", "link:", "workspace:", "portal:")
 
 
 class Entry(NamedTuple):
@@ -58,7 +54,7 @@ def parse(path: Path) -> tuple[ParseResult, DependencyGraph]:
     manifest = read_json(directory / MANIFEST)
     entries = _entries(_read_lock(directory / LOCK))
 
-    return _requested(manifest), _installed(manifest, entries)
+    return requested(manifest, PROJECT_FIELDS), _installed(manifest, entries)
 
 
 def _read_lock(path: Path) -> str:
@@ -189,50 +185,21 @@ def _registry_name(name: str, spec: str) -> str:
     return name
 
 
-def _requested(manifest: dict) -> ParseResult:
-    """What package.json asked for, before the lock decided any versions."""
-    result = ParseResult()
-    for field in PROJECT_FIELDS:
-        for name, spec in (manifest.get(field) or {}).items():
-            if spec.startswith(LOCAL_PREFIXES):
-                result.skipped.append(SkippedLine(0, f"{name}@{spec}", SkipReason.LOCAL_PATH))
-            else:
-                result.dependencies.append(Dependency(name=name, raw_spec=spec))
-    return result
-
-
 def _installed(manifest: dict, entries: dict[str, Entry]) -> DependencyGraph:
-    """Walk the lock into a graph, breadth first from the direct dependencies."""
-    graph = DependencyGraph()
+    """Walk the lock into a graph.
 
-    queue: deque[tuple[str, int, PackageKey | None]] = deque(
-        (key, 0, None) for key in _required_by(_direct(manifest), entries)
-    )
+    A location here is a `name@range` key, because that is what an entry
+    answers to - and one entry often answers several.
+    """
 
-    seen: set[str] = set()
-    while queue:
-        lookup, depth, parent = queue.popleft()
+    def package_at(lookup: str) -> PackageKey:
         entry = entries[lookup]
-        key = PackageKey(entry.name, entry.version, EcoSystem.NPM)
+        return PackageKey(entry.name, entry.version, EcoSystem.NPM)
 
-        # Before the visited check, so every requester gets an edge.
-        _record(graph, key, parent)
+    def required_by(lookup: str) -> list[str]:
+        return _lookups_for(entries[lookup].requires, entries)
 
-        if lookup in seen:
-            continue
-        seen.add(lookup)
-
-        # One entry answers several ranges, so two lookups reach one package.
-        # The graph is keyed by package and add_node replaces, so keep the
-        # entry already there: the walk is breadth first, and it was reached by
-        # a shorter route.
-        if key not in graph.nodes:
-            graph.add_node(key, depth, parent=parent)
-
-        for target in _required_by(entry.requires, entries):
-            queue.append((target, depth + 1, key))
-
-    return graph
+    return walk(_lookups_for(_direct(manifest), entries), package_at, required_by)
 
 
 def _direct(manifest: dict) -> dict[str, str]:
@@ -242,7 +209,7 @@ def _direct(manifest: dict) -> dict[str, str]:
     }
 
 
-def _required_by(requires: dict[str, str], entries: dict[str, Entry]) -> list[str]:
+def _lookups_for(requires: dict[str, str], entries: dict[str, Entry]) -> list[str]:
     """The lookup key for each requirement that the lock actually answers.
 
     A requirement with no entry is dropped rather than reported: an optional
@@ -250,12 +217,3 @@ def _required_by(requires: dict[str, str], entries: dict[str, Entry]) -> list[st
     """
     keys = [_key(name, spec) for name, spec in requires.items()]
     return [key for key in keys if key in entries]
-
-
-def _record(graph: DependencyGraph, key: PackageKey, parent: PackageKey | None) -> None:
-    """Note how we arrived at a package: an edge, or a place in the roots."""
-    if parent is None:
-        if key not in graph.roots:
-            graph.roots.append(key)
-    else:
-        graph.add_edge(parent, key)

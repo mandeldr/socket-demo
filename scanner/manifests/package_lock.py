@@ -15,15 +15,13 @@ Three things make it more than a loop over the file:
   so they have to be found separately and their links followed.
 """
 
-from collections import deque
 from pathlib import Path
 
-from scanner.enums import EcoSystem, SkipReason
+from scanner.enums import EcoSystem
 from scanner.graph import DependencyGraph
-from scanner.manifests import ManifestError, read_json
-from scanner.models import Dependency, PackageKey, ParseResult, SkippedLine
+from scanner.manifests import MANIFEST, ManifestError, read_json, requested, walk
+from scanner.models import PackageKey, ParseResult
 
-MANIFEST = "package.json"
 LOCK = "package-lock.json"
 
 # What to tell someone whose lock file is missing or too old. It is the whole
@@ -37,9 +35,6 @@ INSTALLED_PACKAGE_FIELDS = ("dependencies", "optionalDependencies", "peerDepende
 
 # What the project itself pulls in, which is everything plus its own dev tools.
 PROJECT_FIELDS = INSTALLED_PACKAGE_FIELDS + ("devDependencies",)
-
-# A specifier naming somewhere on disk rather than a release on the registry.
-LOCAL_PREFIXES = ("file:", "link:", "workspace:")
 
 
 def parse(path: Path) -> tuple[ParseResult, DependencyGraph]:
@@ -55,7 +50,7 @@ def parse(path: Path) -> tuple[ParseResult, DependencyGraph]:
     manifest = read_json(directory / MANIFEST)
     lock = read_json(directory / LOCK, missing=f"{MANIFEST} has no {LOCK} beside it; {REGENERATE}")
 
-    return _requested(manifest), _installed(_entries(lock))
+    return requested(manifest, PROJECT_FIELDS), _installed(_entries(lock))
 
 
 def _entries(lock: dict) -> dict:
@@ -76,33 +71,21 @@ def _entries(lock: dict) -> dict:
     raise ManifestError(f"{LOCK} lists no packages")
 
 
-def _requested(manifest: dict) -> ParseResult:
-    """What package.json asked for, before the lock decided any versions."""
-    result = ParseResult()
-
-    for field in PROJECT_FIELDS:
-        for name, spec in (manifest.get(field) or {}).items():
-            if spec.startswith(LOCAL_PREFIXES):
-                # Somewhere on disk, so there is no release to look up. Recorded
-                # rather than dropped, so the report can say what it did not read.
-                result.skipped.append(SkippedLine(0, f"{name}@{spec}", SkipReason.LOCAL_PATH))
-            else:
-                result.dependencies.append(Dependency(name=name, raw_spec=spec))
-
-    return result
-
-
 def _installed(entries: dict) -> DependencyGraph:
-    """Walk the lock into a graph, breadth first from the direct dependencies.
+    """Walk the lock into a graph.
 
-    Breadth first for the same reason as the Python resolver: depth becomes the
-    shortest route to a package, which is the most useful answer to "why is
-    this here".
+    A location here is an install path, because npm puts the same package at
+    several of them and the path is what decides which copy a requirement sees.
     """
-    graph = DependencyGraph()
     packages = {
         path: _key(path, entry) for path, entry in entries.items() if _is_package(path, entry)
     }
+
+    def required_by(path: str) -> list[str]:
+        # A workspace package installs its own devDependencies, exactly as the
+        # root does. Anything under node_modules does not.
+        fields = PROJECT_FIELDS if _is_workspace(path) else INSTALLED_PACKAGE_FIELDS
+        return _paths_required_by(path, entries, packages, fields)
 
     # Direct dependencies are what the root asked for, plus every workspace
     # package. A workspace package is code the project ships rather than
@@ -111,35 +94,7 @@ def _installed(entries: dict) -> DependencyGraph:
     direct = _paths_required_by("", entries, packages, PROJECT_FIELDS)
     direct += [path for path in _workspace_packages(entries) if path in packages]
 
-    queue: deque[tuple[str, int, PackageKey | None]] = deque((path, 0, None) for path in direct)
-
-    seen: set[str] = set()
-    while queue:
-        path, depth, parent = queue.popleft()
-        key = packages[path]
-
-        # Before the visited check, so every requester gets an edge and not
-        # just the first one to arrive. That list is what `dependents_of`
-        # reads to name the package a user actually has to upgrade.
-        _record(graph, key, parent)
-
-        if path in seen:
-            continue
-        seen.add(path)
-
-        # Two paths can hold the same package at the same version - once at the
-        # top and once nested under something that pinned it separately. The
-        # graph is keyed by package, so both arrive at one node, and add_node
-        # replaces. The walk is breadth first, so the entry already there was
-        # reached by a shorter route and is the one to keep.
-        if key not in graph.nodes:
-            graph.add_node(key, depth, parent=parent)
-
-        fields = PROJECT_FIELDS if _is_workspace(path) else INSTALLED_PACKAGE_FIELDS
-        for target in _paths_required_by(path, entries, packages, fields):
-            queue.append((target, depth + 1, key))
-
-    return graph
+    return walk(direct, packages.__getitem__, required_by)
 
 
 def _workspace_packages(entries: dict) -> list[str]:
@@ -176,15 +131,6 @@ def _paths_required_by(
         if path and path in packages:
             found.append(path)
     return found
-
-
-def _record(graph: DependencyGraph, key: PackageKey, parent: PackageKey | None) -> None:
-    """Note how we arrived at a package: an edge, or a place in the roots."""
-    if parent is None:
-        if key not in graph.roots:
-            graph.roots.append(key)
-    else:
-        graph.add_edge(parent, key)
 
 
 def _is_package(install_path: str, entry: dict) -> bool:
