@@ -121,7 +121,7 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
     queue = deque(
         # raw_spec carries the constraint from the manifest, so `flask==3.0.0`
         # resolves to 3.0.0 rather than whatever is currently latest
-        _Lookup(dep.key.name, SpecifierSet(dep.raw_spec), dep.extras, 0, None)
+        _Lookup(dep.name, SpecifierSet(dep.raw_spec), dep.extras, 0, None)
         for dep in direct
     )
 
@@ -133,6 +133,9 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
 
     while queue:
         name, spec, extras, depth, parent = queue.popleft()
+        # Canonicalized here rather than trusted from the caller: these dicts
+        # are keyed by name, and `Flask` and `flask` are one package.
+        name = canonicalize_name(name)
 
         # Fold this request into everything already asked of the package, so it
         # is looked up once against all of it rather than once per requester.

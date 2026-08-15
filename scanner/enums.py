@@ -21,7 +21,7 @@ class EcoSystem(Enum):
 class Source(Enum):
     """Where a vulnerability record came from."""
 
-    GITHUB = "ghsa"
+    GITHUB = "github"
     OSV = "osv"
 
 

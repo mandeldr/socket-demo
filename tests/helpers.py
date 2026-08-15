@@ -75,7 +75,7 @@ def report_for(
     the counts, so this makes one up from them.
     """
     parsed = ParseResult(
-        dependencies=[Dependency(key(f"req{i}"), raw_spec="") for i in range(requirements)],
+        dependencies=[Dependency(f"req{i}", raw_spec="") for i in range(requirements)],
         skipped=skipped or [],
     )
     return build(

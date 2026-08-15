@@ -42,7 +42,9 @@ class PackageKey:
 class Dependency:
     """A requirement as the manifest wrote it, before anything is resolved."""
 
-    key: PackageKey
+    # Canonicalized, so `zope.interface` and `zope_interface` match whatever
+    # a package's requires_dist happens to call it.
+    name: str
     raw_spec: str
     # Optional feature sets the manifest opted into: `celery[redis]` installs
     # redis, so dropping this makes a real dependency invisible.

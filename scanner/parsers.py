@@ -11,9 +11,10 @@ from itertools import takewhile
 from pathlib import Path
 
 from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
 
-from scanner.enums import EcoSystem, SkipReason
-from scanner.models import Dependency, PackageKey, ParseResult, SkippedLine
+from scanner.enums import SkipReason
+from scanner.models import Dependency, ParseResult, SkippedLine
 
 # pip's own comment pattern (pip/_internal/req/req_file.py): "#" starts a
 # comment at the beginning of a line or after whitespace. A URL fragment like
@@ -43,7 +44,7 @@ def parse_requirements_txt(path: Path) -> ParseResult:
 
         result.dependencies.append(
             Dependency(
-                key=PackageKey(req.name, _pinned_version(req), EcoSystem.PYTHON),
+                name=canonicalize_name(req.name),
                 raw_spec=str(req.specifier),
                 extras=frozenset(req.extras),
             )
@@ -116,8 +117,3 @@ def _skip_reason(line: str) -> SkipReason | None:
     if "://" in line:
         return SkipReason.DIRECT_URL
     return None
-
-
-def _pinned_version(req: Requirement) -> str | None:
-    """Return the exact version, or None if the requirement is a range."""
-    return next((s.version for s in req.specifier if s.operator == "=="), None)

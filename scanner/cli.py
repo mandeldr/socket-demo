@@ -25,7 +25,6 @@ from scanner.sources import merge
 EXIT_OK = 0
 EXIT_VULNERABILITIES_FOUND = 1
 EXIT_USAGE_ERROR = 2
-EXIT_SCAN_ERROR = 3
 
 
 def note(message: str) -> None:

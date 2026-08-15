@@ -19,7 +19,7 @@ def key(name: str, version: str | None = "1.0") -> PackageKey:
 
 
 def direct(*names: str) -> list[Dependency]:
-    return [Dependency(key(n), raw_spec="==1.0") for n in names]
+    return [Dependency(n, raw_spec="==1.0") for n in names]
 
 
 def versioned_index(index: dict[str, list[str]], versions: dict[str, list[str]]):
@@ -66,7 +66,7 @@ def test_no_dependencies_gives_an_empty_graph() -> None:
 def test_a_leaf_dependency_is_a_single_node() -> None:
     graph = resolve(direct("flask"), fake_index({"flask": []}))
     assert names(graph) == {"flask"}
-    assert graph.roots == [key("flask")]
+    assert graph.roots == [key("flask", "1.0")]
     assert graph.nodes[key("flask")].depth == 0
 
 
@@ -155,7 +155,7 @@ def test_duplicate_direct_dependencies_collapse() -> None:
     deps = direct("Flask", "FLASK")
     graph = resolve(deps, fake_index({"flask": []}))
     assert len(graph.nodes) == 1
-    assert graph.roots == [key("flask")]
+    assert graph.roots == [key("flask", "1.0")]
 
 
 def test_dependents_of_answers_why_do_i_have_this() -> None:
@@ -183,7 +183,7 @@ def test_a_pinned_direct_dependency_keeps_its_version() -> None:
         seen.append(str(spec))
         return FetchResult("2.0.0", [])
 
-    deps = [Dependency(key("flask", "2.0.0"), raw_spec="==2.0.0")]
+    deps = [Dependency("flask", raw_spec="==2.0.0")]
     resolve(deps, fetch)
     assert seen == ["==2.0.0"]
 
@@ -248,8 +248,8 @@ def test_a_pinned_package_is_not_also_resolved_from_a_range() -> None:
 
     graph = resolve(
         [
-            Dependency(key("a"), raw_spec="==1.0"),
-            Dependency(key("adlfs", "2024.4.1"), raw_spec="==2024.4.1"),
+            Dependency("a", raw_spec="==1.0"),
+            Dependency("adlfs", raw_spec="==2024.4.1"),
         ],
         versioned_index(index, versions),
     )
@@ -338,7 +338,7 @@ def extras_index():
 
 def test_a_requested_extra_pulls_in_its_dependency() -> None:
     graph = resolve(
-        [Dependency(key("celery"), raw_spec="==1.0", extras=frozenset({"redis"}))],
+        [Dependency("celery", raw_spec="==1.0", extras=frozenset({"redis"}))],
         extras_index(),
     )
 
@@ -346,7 +346,7 @@ def test_a_requested_extra_pulls_in_its_dependency() -> None:
 
 
 def test_without_the_extra_that_dependency_is_absent() -> None:
-    graph = resolve([Dependency(key("celery"), raw_spec="==1.0")], extras_index())
+    graph = resolve([Dependency("celery", raw_spec="==1.0")], extras_index())
 
     assert "redis" not in {n.key.name for n in graph.nodes.values()}
 
@@ -372,7 +372,7 @@ def test_an_extra_requested_transitively_is_honoured() -> None:
 def test_extras_do_not_change_the_resolved_version() -> None:
     """`celery` and `celery[redis]` are one installed package, not two."""
     graph = resolve(
-        [Dependency(key("celery"), raw_spec="==1.0", extras=frozenset({"redis"}))],
+        [Dependency("celery", raw_spec="==1.0", extras=frozenset({"redis"}))],
         extras_index(),
     )
 
