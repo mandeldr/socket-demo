@@ -7,6 +7,7 @@ to do with every line shape that shows up in a real requirements file.
 from pathlib import Path
 
 import pytest
+from packaging.specifiers import SpecifierSet
 
 from scanner.enums import SkipReason
 from scanner.manifests import requirements_txt
@@ -54,9 +55,14 @@ def test_raw_spec_is_preserved(tmp_path: Path) -> None:
 # versions
 
 
-def test_range_has_no_pinned_version(tmp_path: Path) -> None:
+def test_a_range_is_carried_through_whole(tmp_path: Path) -> None:
+    """Both bounds have to survive: dropping one silently widens the search."""
     result = requirements_txt.parse(write(tmp_path, "pandas>=2.0.0,<3.0.0\n"))
+
     (dep,) = result.dependencies
+    assert dep.name == "pandas"
+    assert SpecifierSet(dep.raw_spec).contains("2.5.0")
+    assert not SpecifierSet(dep.raw_spec).contains("3.0.0")
 
 
 def test_unpinned_package_has_no_version(tmp_path: Path) -> None:
@@ -66,9 +72,14 @@ def test_unpinned_package_has_no_version(tmp_path: Path) -> None:
     assert dep.name == "pyyaml"
 
 
-def test_compatible_release_operator_is_not_a_pin(tmp_path: Path) -> None:
+def test_the_compatible_release_operator_is_carried_through(tmp_path: Path) -> None:
+    """`~=8.1.7` means >=8.1.7 and <8.2 - a range, not a pin."""
     result = requirements_txt.parse(write(tmp_path, "click~=8.1.7\n"))
+
     (dep,) = result.dependencies
+    spec = SpecifierSet(dep.raw_spec)
+    assert spec.contains("8.1.9")
+    assert not spec.contains("8.2.0")
 
 
 # names
@@ -102,9 +113,15 @@ def test_leading_and_trailing_whitespace(tmp_path: Path) -> None:
 
 
 def test_trailing_comment_is_removed(tmp_path: Path) -> None:
+    """The comment must not end up in the specifier, which would make the line
+    unparseable and silently drop the requirement."""
     content = "cryptography==42.0.1  # pinned for FIPS\n"
     result = requirements_txt.parse(write(tmp_path, content))
+
     (dep,) = result.dependencies
+    assert dep.name == "cryptography"
+    assert dep.raw_spec == "==42.0.1"
+    assert result.skipped == []
 
 
 def test_spaces_around_operator(tmp_path: Path) -> None:
@@ -315,3 +332,20 @@ def test_no_extras_is_an_empty_set(tmp_path: Path) -> None:
     manifest.write_text("celery==5.3.6\n")
 
     assert requirements_txt.parse(manifest).dependencies[0].extras == frozenset()
+
+
+@pytest.mark.parametrize("line", ["./local/pkg", "../sibling", "/abs/path/pkg"])
+def test_a_local_path_is_recorded_as_one(tmp_path: Path, line: str) -> None:
+    """SkipReason.LOCAL_PATH exists and the npm side uses it. Reporting these
+    as `could not be parsed` blames the user's syntax for something we simply
+    do not follow."""
+    result = requirements_txt.parse(write(tmp_path, line + "\n"))
+
+    assert [s.reason for s in result.skipped] == [SkipReason.LOCAL_PATH]
+
+
+def test_genuinely_broken_syntax_is_still_invalid(tmp_path: Path) -> None:
+    """The local-path check must not swallow real syntax errors."""
+    result = requirements_txt.parse(write(tmp_path, "flask==\n"))
+
+    assert [s.reason for s in result.skipped] == [SkipReason.INVALID]

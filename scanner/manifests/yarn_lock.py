@@ -36,6 +36,13 @@ NPM_PROTOCOL = "npm:"
 # Berry's file header. It parses as an entry and is not a package.
 METADATA_KEY = "__metadata"
 
+# What an installed package pulls in, in either format. peerDependencies is
+# absent on purpose: yarn does not install a dependency's peers the way npm 7
+# and later do, so following them here would report packages yarn never put on
+# disk. Both readers use this list, so the same project scans the same whether
+# yarn 1 or berry wrote the lock.
+REQUIRE_FIELDS = ("dependencies", "optionalDependencies")
+
 
 class _Entry(NamedTuple):
     """One resolution: what it turned out to be, and what it needs."""
@@ -75,8 +82,12 @@ def _entries(text: str) -> dict[str, _Entry]:
 
 
 def _is_berry(text: str) -> bool:
-    """Berry announces itself with a __metadata block; yarn 1 never has one."""
-    return METADATA_KEY in text
+    """Berry announces itself with a __metadata block; yarn 1 never has one.
+
+    Matched as a line of its own rather than anywhere in the file, so a package
+    or URL that happens to contain the word does not switch the reader.
+    """
+    return any(line.startswith(METADATA_KEY) for line in text.splitlines())
 
 
 def _berry_entries(text: str) -> dict[str, tuple[str, dict[str, str]]]:
@@ -93,7 +104,9 @@ def _berry_entries(text: str) -> dict[str, tuple[str, dict[str, str]]]:
         version = body.get("version")
         if version is None:
             continue
-        requires = {**(body.get("dependencies") or {})}
+        requires = {
+            name: spec for field in REQUIRE_FIELDS for name, spec in (body.get(field) or {}).items()
+        }
         # One key can carry several descriptors, comma separated, as in v1.
         for descriptor in descriptors.split(", "):
             entries[descriptor.strip().strip('"')] = (str(version), requires)
@@ -136,7 +149,7 @@ def _v1_entries(text: str) -> dict[str, tuple[str, dict[str, str]]]:
             version, requires, in_requires = "", {}, False
         elif indent == 2:
             field, _, value = line.partition(" ")
-            in_requires = field.rstrip(":") in ("dependencies", "optionalDependencies")
+            in_requires = field.rstrip(":") in REQUIRE_FIELDS
             if field.rstrip(":") == "version":
                 version = value.strip().strip('"')
         elif in_requires:

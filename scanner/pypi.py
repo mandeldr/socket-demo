@@ -68,7 +68,14 @@ class PyPIClient:
             elif response.status_code != 200:
                 result = (None, f"PyPI returned HTTP {response.status_code}")
             else:
-                result = (response.json(), None)
+                payload = response.json()
+                # A 200 carrying `null` or a list is not a package page. Without
+                # this the caller gets no payload and no error, and `ok` reads
+                # the error - so a failed lookup is recorded as a success.
+                if isinstance(payload, dict):
+                    result = (payload, None)
+                else:
+                    result = (None, "PyPI returned an unexpected payload")
         except ValueError:
             result = (None, "PyPI returned invalid JSON")
         except OSError as exc:

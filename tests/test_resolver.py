@@ -11,7 +11,7 @@ from packaging.version import Version
 
 from scanner.enums import Ecosystem
 from scanner.models import Dependency, PackageKey
-from scanner.resolver import PackageMetadata, resolve
+from scanner.resolver import PackageMetadata, _required_packages, resolve
 
 
 def key(name: str, version: str | None = "1.0") -> PackageKey:
@@ -417,3 +417,65 @@ def test_the_extra_is_honoured_whichever_order_it_arrives_in() -> None:
     graph = resolve(direct("a", "b"), fetch)
 
     assert "redis" in {n.key.name for n in graph.nodes.values()}
+
+
+# --- marker-guarded constraints are not unconditional ----------------------
+
+
+def test_a_marker_guarded_constraint_does_not_invent_a_conflict() -> None:
+    """`foo<2; python_version<"3.9"` beside `foo>=2` is not a conflict pip ever
+    sees - the two apply in different environments. Intersecting them as if
+    both were unconditional manufactures an unsatisfiable set and reports a
+    problem that does not exist."""
+    metadata = PackageMetadata(
+        version="1.0",
+        requirements=[Requirement('foo<2; python_version<"3.9"'), Requirement("foo>=2")],
+    )
+
+    ((name, spec, _),) = _required_packages(metadata)
+
+    assert name == "foo"
+    assert not spec.is_unsatisfiable()
+    assert spec.contains("2.5")
+
+
+def test_a_marker_guarded_constraint_is_still_used_when_it_fits() -> None:
+    """Precision is not thrown away: a guarded constraint that agrees with the
+    others still narrows the answer."""
+    metadata = PackageMetadata(
+        version="1.0",
+        requirements=[Requirement("foo>=1"), Requirement('foo<3; python_version<"3.9"')],
+    )
+
+    ((_, spec, _),) = _required_packages(metadata)
+
+    assert spec.contains("2.0")
+    assert not spec.contains("3.5")
+
+
+def test_two_unconditional_constraints_that_conflict_still_do() -> None:
+    """The guard is only for markers. A genuine conflict must stay one."""
+    metadata = PackageMetadata(
+        version="1.0", requirements=[Requirement("foo<2"), Requirement("foo>=2")]
+    )
+
+    ((_, spec, _),) = _required_packages(metadata)
+
+    assert spec.is_unsatisfiable()
+
+
+def test_the_unconditional_constraints_are_applied_first() -> None:
+    """Order in requires_dist must not decide the answer."""
+    guarded_first = PackageMetadata(
+        version="1.0",
+        requirements=[Requirement('foo<2; python_version<"3.9"'), Requirement("foo>=2")],
+    )
+    guarded_last = PackageMetadata(
+        version="1.0",
+        requirements=[Requirement("foo>=2"), Requirement('foo<2; python_version<"3.9"')],
+    )
+
+    ((_, first, _),) = _required_packages(guarded_first)
+    ((_, last, _),) = _required_packages(guarded_last)
+
+    assert str(first) == str(last)

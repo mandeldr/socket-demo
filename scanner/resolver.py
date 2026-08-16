@@ -50,17 +50,41 @@ def _required_packages(metadata: PackageMetadata) -> list[tuple[str, SpecifierSe
     """What a package requires, one entry per required package.
 
     A package can name the same requirement more than once under different
-    markers - `foo>=1.0; python_version<"3.10"` beside `foo>=2.0` - and those
-    are constraints on one package, not two. Extras are unioned for the same
+    markers - `foo<2; python_version<"3.9"` beside `foo>=2` - and those are
+    constraints on one package, not two. Extras are unioned for the same
     reason: `celery[redis]` and `celery[auth]` are one celery with both.
+
+    Unconditional requirements are folded in first, so the order they happen to
+    appear in `requires_dist` cannot change the answer.
     """
     specs: dict[str, SpecifierSet] = {}
     extras: dict[str, frozenset[str]] = {}
-    for requirement in metadata.requirements:
+
+    for requirement in sorted(metadata.requirements, key=lambda r: r.marker is not None):
         name = canonicalize_name(requirement.name)
-        specs[name] = specs.get(name, SpecifierSet()) & requirement.specifier
+        specs[name] = _narrowed(specs.get(name, SpecifierSet()), requirement)
         extras[name] = extras.get(name, frozenset()) | frozenset(requirement.extras)
+
     return [(name, spec, extras[name]) for name, spec in specs.items()]
+
+
+def _narrowed(so_far: SpecifierSet, requirement: Requirement) -> SpecifierSet:
+    """Fold one more requirement into what is already asked of a package.
+
+    A marker-guarded requirement applies in some environments and not others,
+    and this walks a superset of environments rather than resolving for one.
+    So its constraint is taken only while the result stays satisfiable:
+    `foo<2; python_version<"3.9"` beside `foo>=2` is not a conflict pip would
+    ever see, and reporting one would be inventing a problem rather than
+    finding it.
+
+    Two unconditional requirements that disagree are a real conflict and are
+    left to become unsatisfiable, which is what the caller reports.
+    """
+    combined = so_far & requirement.specifier
+    if requirement.marker is not None and combined.is_unsatisfiable():
+        return so_far
+    return combined
 
 
 def _queue_requirements(
@@ -97,9 +121,11 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
     Breadth-first so `depth` is the shortest path to each package, which is the
     most useful answer to "why is this here".
 
-    There is no depth limit. The walk is bounded by the graph itself - a
-    package already resolved is never resolved again - so a limit would only
-    mean looking at less of a tree that pip installs all of.
+    There is no depth limit. The walk is bounded by `resolved` below - a
+    package settled once is not settled again - so a limit would only mean
+    looking at less of a tree that pip installs all of. The one exception is
+    a package whose extras grow later, which is looked up again for the extra
+    requirements alone.
 
     A package is resolved once, against every constraint anything has placed on
     it. The manifest may pin `adlfs==2024.4.1` while a provider asks for

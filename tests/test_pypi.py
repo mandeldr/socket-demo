@@ -137,10 +137,19 @@ def test_a_package_is_only_requested_once() -> None:
 
 
 def test_names_are_canonicalized_before_lookup() -> None:
+    """PEP 503: `Zope.Interface` and `zope-interface` are one project, so the
+    request has to go to the canonical URL. Asserting on the return value alone
+    is not enough - fetch always returns a PackageMetadata, even for a 404, so
+    such a test passes with canonicalization deleted."""
     client, session = client_for(
         {"https://pypi.org/pypi/zope-interface/json": package_page("6.1", [], ["6.1"])}
     )
-    assert client.fetch("Zope.Interface", SpecifierSet()) is not None
+
+    result = client.fetch("Zope.Interface", SpecifierSet())
+
+    assert session.calls == ["https://pypi.org/pypi/zope-interface/json"]
+    assert result.ok
+    assert result.version == "6.1"
 
 
 def test_a_network_error_returns_none_rather_than_raising() -> None:
@@ -413,3 +422,24 @@ def test_platform_markers_are_kept_whether_or_not_extras_are_asked_for() -> None
     for extras in (frozenset(), frozenset({"redis"})):
         result = client.fetch("celery", SpecifierSet(), extras=extras)
         assert "pywin32" in [r.name for r in result.requirements]
+
+
+def test_a_json_body_of_null_is_an_error_not_a_success() -> None:
+    """A 200 whose body is literally `null` used to produce PackageMetadata
+    with no error and no version - and `.ok` reads the error, so the resolver
+    recorded it as a successful lookup of a versionless package."""
+
+    class NullBody:
+        def get(self, url, timeout=0):
+            class R:
+                status_code = 200
+
+                def json(self):
+                    return None
+
+            return R()
+
+    result = PyPIClient(session=NullBody()).fetch("flask", SpecifierSet())
+
+    assert not result.ok
+    assert result.version is None

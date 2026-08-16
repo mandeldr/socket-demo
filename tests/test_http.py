@@ -25,7 +25,8 @@ def test_a_404_is_not_retried() -> None:
 
 
 def test_backoff_is_exponential() -> None:
-    """urllib3 waits backoff * 2 ** (attempt - 1), so 0.5 gives 0.5s, 1s, 2s."""
+    """urllib3 retries immediately once, then waits backoff * 2 ** (n - 1),
+    so 0.5 gives 0s, 1s, 2s rather than 0.5s, 1s, 2s."""
     assert retry_policy(make_session()).backoff_factor == 0.5
 
 
@@ -46,6 +47,13 @@ def test_a_caller_can_opt_into_retrying_post() -> None:
     assert set(policy.allowed_methods) == {"GET", "POST"}
 
 
-def test_the_adapter_is_mounted_for_https() -> None:
-    session = make_session()
-    assert session.get_adapter("https://pypi.org/pypi/flask/json") is not None
+def test_the_retrying_adapter_is_the_one_mounted_for_https() -> None:
+    """`get_adapter` raises rather than returning None, so asserting `is not
+    None` here can never fail. What matters is that the adapter carrying the
+    retry policy is the one an https request will actually use."""
+    session = make_session(retries=3)
+
+    # The policy reached through a real https URL is the one urllib3 will act
+    # on, and it is the same object that was mounted.
+    assert retry_policy(session).total == 3
+    assert session.get_adapter("https://pypi.org/pypi/flask/json") is session.adapters["https://"]

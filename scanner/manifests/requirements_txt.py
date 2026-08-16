@@ -114,6 +114,11 @@ def _skip_reason(line: str) -> SkipReason | None:
         return SkipReason.PIP_OPTION
     if line.startswith(("git+", "hg+", "svn+", "bzr+")):
         return SkipReason.VCS
+    if line.startswith(("./", "../", "/", ".\\", "..\\")):
+        # A path on disk, not a release on an index. Named for what it is
+        # rather than reported as unparseable syntax, which would blame the
+        # manifest for something we simply do not follow.
+        return SkipReason.LOCAL_PATH
     if "://" in line:
         return SkipReason.DIRECT_URL
     return None

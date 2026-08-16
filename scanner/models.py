@@ -59,8 +59,9 @@ class PackageKey:
 class Dependency:
     """A requirement as the manifest wrote it, before anything is resolved."""
 
-    # Canonicalized, so `zope.interface` and `zope_interface` match whatever
-    # a package's requires_dist happens to call it.
+    # As the manifest spelled it. Canonicalization happens in PackageKey,
+    # which is where the name is used as a lookup key; a Dependency is only
+    # ever counted and handed to a resolver that canonicalizes defensively.
     name: str
     raw_spec: str
     # Optional feature sets the manifest opted into: `celery[redis]` installs
