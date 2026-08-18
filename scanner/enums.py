@@ -1,7 +1,7 @@
-"""Fixed vocabularies, so the strings that matter exist in one place.
+"""The fixed string vocabularies, kept in one place.
 
-Two of these carry values other systems care about - OSV spells the Python
-ecosystem `PyPI`, exactly - and one is written for a person to read.
+Two of these carry values other systems see on the wire. One is only ever read
+by a person.
 """
 
 from enum import Enum
@@ -10,8 +10,9 @@ from enum import Enum
 class Ecosystem(Enum):
     """Package registries we can scan.
 
-    The values are the identifiers OSV expects, so `PyPI` is spelled exactly
-    that way. Keeping them here means the string exists in one place.
+    The values are what OSV expects in a query body, capitalisation included,
+    so `.value` goes straight over the wire. GitHub spells Python `pip`; that
+    translation lives in github.py so this promise stays true.
     """
 
     PYTHON = "PyPI"
@@ -26,7 +27,11 @@ class Source(Enum):
 
 
 class SkipReason(Enum):
-    """Why a manifest line did not become a dependency."""
+    """Why a manifest line did not become a dependency.
+
+    The values are printed straight into the report, so they read as English
+    rather than as enum names.
+    """
 
     PIP_OPTION = "pip option"
     EDITABLE = "editable install"

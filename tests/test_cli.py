@@ -366,6 +366,82 @@ def test_an_unsupported_lock_file_says_what_is_supported(
     assert "package-lock.json" in error
 
 
+# --- formats that must never be read as a requirements file ----------------
+#
+# The requirements reader accepts a bare name with no version, so an entire
+# manifest of some other format parses as either nothing or as garbage. Both
+# end in exit 0 and "no known vulnerabilities", which is a scanner reporting
+# clean on a project it never looked at.
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        ("poetry.lock", '[[package]]\nname = "flask"\nversion = "3.0.0"\n'),
+        ("Pipfile.lock", '{"default": {"flask": {"version": "==3.0.0"}}}'),
+        ("go.mod", "module example.com/x\n\ngo 1.22\n\nrequire (\n\tx/y v1.2.3\n)\n"),
+        ("Gemfile.lock", "GEM\n  specs:\n    rails (7.0.4)\n\nDEPENDENCIES\n  rails\n"),
+        ("Cargo.lock", '[[package]]\nname = "serde"\nversion = "1.0"\n'),
+    ],
+)
+def test_another_ecosystems_manifest_is_refused_not_scanned_as_empty(
+    tmp_path: Path,
+    offline: None,
+    capsys: pytest.CaptureFixture[str],
+    filename: str,
+    contents: str,
+) -> None:
+    path = tmp_path / filename
+    path.write_text(contents)
+
+    assert main([str(path)]) == EXIT_USAGE_ERROR
+
+    captured = capsys.readouterr()
+    assert filename in captured.err
+    # The dangerous output, which is what this test exists to prevent.
+    assert "no known vulnerabilities" not in captured.out
+
+
+def test_a_poetry_lock_names_the_export_command(
+    tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Every other error in the tool names the next thing to type."""
+    path = tmp_path / "poetry.lock"
+    path.write_text('[[package]]\nname = "flask"\n')
+
+    main([str(path)])
+
+    assert "poetry export" in capsys.readouterr().err
+
+
+def test_an_unrecognised_filename_is_refused_rather_than_guessed_at(
+    tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The catch-all. A format nobody has thought of yet must not be read as
+    Python just because it is not on a list."""
+    path = tmp_path / "deps.yaml"
+    path.write_text("dependencies:\n  - flask\n")
+
+    assert main([str(path)]) == EXIT_USAGE_ERROR
+    assert "deps.yaml" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "filename", ["requirements.txt", "requirements-dev.txt", "constraints.txt", "prod.txt"]
+)
+def test_any_txt_file_is_read_as_requirements(
+    tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str], filename: str
+) -> None:
+    """pip has no fixed name for these, so the extension is what we go on.
+    Refusing an unusually named requirements file would be worse than reading
+    one, because the tool would be turning away work it can actually do."""
+    path = tmp_path / filename
+    path.write_text("flask==1.0\n")
+
+    assert main([str(path), "--format", "json"]) == EXIT_OK
+    assert json.loads(capsys.readouterr().out)["summary"]["total_packages"] == 2
+
+
 def test_stale_after_says_a_lock_file_carries_no_dates(
     tmp_path: Path, offline: None, capsys: pytest.CaptureFixture[str]
 ) -> None:

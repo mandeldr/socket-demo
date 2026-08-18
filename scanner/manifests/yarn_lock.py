@@ -71,11 +71,18 @@ def _read_lock(path: Path) -> str:
 
 
 def _entries(text: str) -> dict[str, _Entry]:
-    """The lock as one map, keyed by the requirement each entry answers."""
+    """The lock as one map, keyed by the requirement each entry answers.
+
+    Both readers hand back the same shape, so everything below this line is
+    format-agnostic.
+    """
     raw = _berry_entries(text) if _is_berry(text) else _v1_entries(text)
 
     entries: dict[str, _Entry] = {}
     for descriptor, (version, requires) in raw.items():
+        # Split `express@^4.17.1` into name and range, then rebuild the key
+        # with the protocol stripped, so berry's `npm:^1.0.0` and yarn 1's
+        # `^1.0.0` produce the same lookup key.
         name, spec = _split_descriptor(descriptor)
         entries[_descriptor(name, spec)] = _Entry(_registry_name(name, spec), version, requires)
     return entries
@@ -116,25 +123,31 @@ def _berry_entries(text: str) -> dict[str, tuple[str, dict[str, str]]]:
 def _v1_entries(text: str) -> dict[str, tuple[str, dict[str, str]]]:
     """Read a yarn 1 lock, which looks like YAML and is not.
 
-    A YAML parser fails on the first `dependencies:` block, because the entries
-    under it are `name "range"` pairs with no colon. The format is small enough
-    to read directly: entries start in column zero, their fields are indented
-    two, and a dependency list is indented four.
+    A YAML parser dies on the first `dependencies:` block, whose entries are
+    `name "range"` pairs with no colon. The format is small enough to read
+    directly, and indentation is the whole grammar:
 
-    Both PyPI yarn.lock libraries were measured against this and leave a comma
-    separated key joined, so a lookup for either range finds nothing. That is
-    roughly one edge in twelve on a real lock, silently unresolved, which is
-    why this is twenty lines rather than a dependency.
+        express@^4.17.1:          <- column 0, the descriptor
+          version "4.17.1"        <- indent 2, a field
+          dependencies:           <- indent 2, starts a requirement list
+            debug "2.6.9"         <- indent 4, a requirement
+
+    Both yarn.lock libraries on PyPI leave a comma-separated descriptor joined,
+    so a lookup for either range finds nothing - about one edge in four on a
+    real lock, silently unresolved. That is why this is twenty lines here
+    instead of a dependency.
     """
     entries: dict[str, tuple[str, dict[str, str]]] = {}
+    # State for the entry currently being read.
     descriptors: list[str] = []
     version = ""
     requires: dict[str, str] = {}
-    in_requires = False
+    in_requires = False  # are we inside a dependencies block?
 
     def flush() -> None:
+        """Commit the entry just read, once per descriptor it answers."""
         for descriptor in descriptors:
-            if version:
+            if version:  # no version means it was not a real entry
                 entries[descriptor] = (version, dict(requires))
 
     for raw in text.splitlines():
@@ -144,28 +157,34 @@ def _v1_entries(text: str) -> dict[str, tuple[str, dict[str, str]]]:
         indent = len(raw) - len(raw.lstrip())
 
         if indent == 0:
+            # A new entry starts here, so commit the previous one first.
             flush()
+            # One key can answer several ranges: `"a@^1.0", "a@^1.2":`
             descriptors = [d.strip().strip('"') for d in line.rstrip(":").split(", ")]
             version, requires, in_requires = "", {}, False
         elif indent == 2:
             field, _, value = line.partition(" ")
+            # Set the flag on every indent-2 line, so leaving a dependencies
+            # block and entering another field turns it back off.
             in_requires = field.rstrip(":") in REQUIRE_FIELDS
             if field.rstrip(":") == "version":
                 version = value.strip().strip('"')
         elif in_requires:
+            # indent 4 inside a dependencies block: `debug "2.6.9"`
             name, _, spec = line.partition(" ")
             requires[name.strip('"').rstrip(":")] = spec.strip().strip('"')
 
-    flush()
+    flush()  # the last entry has no following column-0 line to trigger it
     return entries
 
 
 def _split_descriptor(descriptor: str) -> tuple[str, str]:
     """`express@4.17.1` -> ("express", "4.17.1").
 
-    Split on the first `@` after position zero, so a scope survives:
-    `@babel/core@^7.0.0` is one name and one range, not three pieces. Splitting
-    on the last `@` instead would read an alias backwards.
+    Find the first `@` at position 1 or later. Starting at 1 rather than 0 is
+    what keeps a scope intact - `@babel/core@^7.0.0` splits into `@babel/core`
+    and `^7.0.0`, not on its leading `@`. Splitting on the *last* `@` would
+    read an alias like `utils@npm:lodash@4.17.15` backwards.
     """
     at = descriptor.find("@", 1)
     if at == -1:
@@ -190,10 +209,11 @@ def _registry_name(name: str, spec: str) -> str:
     everything between the protocol and the version.
     """
     if spec.startswith(NPM_PROTOCOL):
-        aliased = spec[len(NPM_PROTOCOL) :]
-        at = aliased.find("@", 1)
+        aliased = spec[len(NPM_PROTOCOL) :]  # "lodash@4.17.15"
+        at = aliased.find("@", 1)  # again from 1, so scoped aliases survive
         if at != -1:
-            return aliased[:at]
+            return aliased[:at]  # "lodash"
+    # No `npm:` prefix, so the declared name is the real one.
     return name
 
 

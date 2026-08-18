@@ -80,8 +80,11 @@ def _installed(entries: dict) -> DependencyGraph:
     """Walk the lock into a graph.
 
     A location here is an install path, because npm puts the same package at
-    several of them and the path is what decides which copy a requirement sees.
+    several of them and the path decides which copy a requirement sees.
     """
+    # Every real package in the lock, as {install path: PackageKey}. This is
+    # also the membership test used below: a path not in here is not something
+    # we can scan.
     packages = {
         path: _package_key(path, entry)
         for path, entry in entries.items()
@@ -89,18 +92,20 @@ def _installed(entries: dict) -> DependencyGraph:
     }
 
     def required_by(path: str) -> list[str]:
-        # A workspace package installs its own devDependencies, exactly as the
-        # root does. Anything under node_modules does not.
+        # Which requirement fields apply depends on what this entry is. A
+        # workspace package installs its own devDependencies exactly as the
+        # root does; anything under node_modules does not.
         fields = PROJECT_FIELDS if _is_workspace(path) else INSTALLED_PACKAGE_FIELDS
         return _paths_required_by(path, entries, packages, fields)
 
-    # Direct dependencies are what the root asked for, plus every workspace
-    # package. A workspace package is code the project ships rather than
-    # something it pulled in, and `npm ls` lists them alongside the root's own
-    # dependencies for that reason.
+    # The roots are two things added together. First, what the root entry ("")
+    # asked for.
     direct = _paths_required_by("", entries, packages, PROJECT_FIELDS)
+    # Second, every workspace package. These are code the project ships rather
+    # than something it pulled in, and `npm ls` counts them as direct too.
     direct += [path for path in _workspace_packages(entries) if path in packages]
 
+    # packages.__getitem__ is the `package_at` callback: path -> PackageKey.
     return walk(direct, packages.__getitem__, required_by)
 
 
@@ -108,9 +113,10 @@ def _workspace_packages(entries: dict) -> list[str]:
     """The project's own packages: real directories, not installs.
 
     A monorepo lists each of these twice - once as the directory holding the
-    code, and once as a link under node_modules so its siblings can import it.
-    This finds the first kind, which is the one with the dependencies on it.
+    code (`packages/api`), and once as a link under node_modules so siblings
+    can import it. This finds the first kind, which carries the dependencies.
     """
+    # `if path` drops the root entry, whose key is the empty string.
     return [path for path in entries if path and "node_modules/" not in path]
 
 
@@ -128,13 +134,15 @@ def _paths_required_by(
 ) -> list[str]:
     """Where to find each package this one requires.
 
-    A requirement that resolves to nothing installed is dropped rather than
-    reported: an optional peer dependency nobody supplied is the ordinary
-    reason, and it is not a fault in the manifest.
+    A requirement resolving to nothing installed is dropped, not reported: an
+    optional peer nobody supplied is the ordinary case, not a broken manifest.
     """
     found = []
     for name in _names_required_by(entries[requirer], fields):
+        # Turn each required *name* into the install path of the copy this
+        # particular requirer actually sees.
         path = _copy_visible_to(requirer, name, entries)
+        # `path in packages` also filters out links and versionless entries.
         if path and path in packages:
             found.append(path)
     return found
@@ -156,14 +164,15 @@ def _package_key(install_path: str, entry: dict) -> PackageKey:
 def _package_name(install_path: str, entry: dict) -> str:
     """The name the registry knows this package by.
 
-    An entry carries `name` when that differs from where it was installed:
-    `"utils": "npm:lodash@4.17.15"` puts lodash in node_modules/utils. Reading
-    the name off the path would ask OSV about `utils`, which has no advisories,
-    so a package with six of them comes back clean. The path is a location; the
-    field is the identity.
+    An entry carries `name` only when it differs from where it was installed:
+    `"utils": "npm:lodash@4.17.15"` puts lodash in node_modules/utils. Read
+    the name off the path and you ask OSV about `utils`, which has no
+    advisories - so a package with six of them comes back clean.
     """
     if entry.get("name"):
         return str(entry["name"])
+    # No alias, so the name is whatever follows the last `node_modules/`.
+    # Scoped packages survive this: `node_modules/@babel/core` -> `@babel/core`.
     return install_path.rsplit("node_modules/", 1)[-1]
 
 
@@ -175,10 +184,10 @@ def _names_required_by(entry: dict, fields: tuple[str, ...]) -> list[str]:
 def _copy_visible_to(requirer: str, name: str, entries: dict) -> str | None:
     """Which copy of `name` the package at `requirer` actually sees.
 
-    Node looks in the requirer's own node_modules first, then its parent's, and
-    so on out to the project root, so a copy nested deep shadows the one above
-    it. That is how one project installs `ms` at three versions at once, and
-    why a lock path rather than a package name identifies a node here.
+    Node looks in the requirer's own node_modules first, then its parent's,
+    and so on out to the project root. A copy nested deep therefore shadows
+    the one above it, which is how one project installs `ms` at three versions
+    at once - and why an install path, not a name, identifies a node here.
 
         node_modules/send  needs  ms
           node_modules/send/node_modules/ms   <- found, 2.0.0
@@ -186,11 +195,20 @@ def _copy_visible_to(requirer: str, name: str, entries: dict) -> str | None:
     """
     prefix = requirer
     while True:
+        # Look for `name` inside the current prefix's node_modules. When the
+        # prefix is "" we are at the project root, so there is no leading path.
         candidate = f"{prefix}/node_modules/{name}" if prefix else f"node_modules/{name}"
         if candidate in entries:
             return _follow_link(candidate, entries)
+
+        # Already searched the root and found nothing: the requirement is not
+        # installed. An unmet optional peer lands here.
         if not prefix:
             return None
+
+        # Step one level outward by chopping off the last `/node_modules/...`
+        # segment. `a/node_modules/b` -> `a`; a path with no segment left
+        # becomes "", which makes the next pass search the root.
         prefix = prefix.rsplit("/node_modules/", 1)[0] if "/node_modules/" in prefix else ""
 
 
@@ -203,6 +221,8 @@ def _follow_link(install_path: str, entries: dict) -> str:
     """
     entry = entries[install_path]
     target = entry.get("resolved")
+    # Only follow when it really is a link *and* the target exists, so a
+    # dangling `resolved` cannot send us to a path that is not in the lock.
     if entry.get("link") and target in entries:
         return str(target)
     return install_path

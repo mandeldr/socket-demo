@@ -29,20 +29,33 @@ def build(
 ) -> dict:
     """Everything worth saying about one scan, as plain data."""
     now = generated_at or datetime.now(timezone.utc)
+    # Packages that never got a version are excluded from every count. They
+    # appear under "unresolved" instead, so direct + transitive still add up.
     resolved = [node for node in graph.nodes.values() if not node.failed]
 
     parsed = parsed or ParseResult()
     rules = {rule.strip().upper() for rule in ignore or []}
+
+    # Two filters, applied in order, and the difference between them is the
+    # main idea in this module:
+    #   `kept`  - survived --ignore. The user decided these do not count, so
+    #             they leave the summary, the exit code and the upgrade target.
+    #   `shown` - survived --min-severity as well. A display choice only.
     kept, ignored_count = _filter(findings, lambda v: not _ignored(v, rules))
 
     shown, hidden_count = kept, 0
     if min_severity:
+        # Position in SEVERITY_ORDER, which runs worst to least, so a lower
+        # index is more serious.
         threshold = SEVERITY_ORDER.index(min_severity.strip().upper())
         shown, hidden_count = _filter(kept, lambda v: _serious_enough(v, threshold))
 
     return {
         "manifest": str(manifest),
         "generated_at": now.isoformat(),
+        # `kept`, not `shown`: the summary counts everything that was found and
+        # not explicitly ignored, so --min-severity cannot make a scan look
+        # cleaner than it is. The exit code is read from here.
         "summary": _summary(
             resolved,
             kept,
@@ -219,23 +232,26 @@ def _finding(
 def _upgrade_target(package: PackageKey, vulnerabilities: list[Vulnerability]) -> str | None:
     """The lowest version that clears every finding for this package.
 
-    For each finding take the lowest published fix above the installed version,
-    then take the highest of those: anything lower leaves some finding open.
-    None when even one finding has no fix that helps.
+    Two steps. Per finding, take the lowest published fix that is actually
+    above the installed version. Then take the highest of those, because
+    anything lower would leave one of the other findings open.
 
     This assumes releases go up in a line. A project that backports a fix to an
     old branch after shipping a newer major - urllib3 does this with 1.26.x -
-    can push the answer higher than strictly necessary. For a security tool
-    that is the safe direction to be wrong in.
+    can push the answer higher than strictly necessary, which is the safe
+    direction for a security tool to be wrong in.
     """
     current = _version(package.version)
-    if current is None:
+    if current is None:  # no version installed, so nothing to compare against
         return None
 
     target = None
     for vulnerability in vulnerabilities:
+        # `v > current` drops fixes on older branches: they are real releases
+        # but they would be a downgrade from what is installed.
         usable = [v for v in map(_version, vulnerability.fixed_versions) if v and v > current]
         if not usable:
+            # One unfixable finding means no single version clears them all.
             return None
         lowest = min(usable)
         if target is None or lowest > target:
@@ -263,12 +279,14 @@ def _remediation(package: PackageKey, graph: DependencyGraph) -> str:
     """Which package to change, which is not always the vulnerable one.
 
     A transitive package is pinned by whatever required it, so editing the
-    manifest to bump it has no effect. The dependents are what has to move.
+    manifest to bump it directly has no effect. The dependents have to move.
     """
+    # Depth 0 means the manifest asked for it, so the manifest is the fix.
     if graph.nodes[package].depth == 0:
         return f"upgrade {package.name} in the manifest"
 
     dependents = sorted({key.name for key in graph.dependents_of(package)})
+    # Empty only for a hand-built graph; the walks always record the edge.
     if not dependents:
         return f"upgrade whatever requires {package.name}"
 

@@ -63,12 +63,14 @@ def cve_of(vulnerability: Vulnerability) -> str | None:
 def dedupe(vulnerabilities: list[Vulnerability]) -> list[Vulnerability]:
     """Collapse records describing the same problem into one.
 
-    One CVE usually arrives more than once: OSV publishes GitHub's write-up and
-    PyPA's, and GitHub is asked directly on top of that. Keyed on the CVE they
-    become one finding.
+    One CVE usually arrives more than once: OSV publishes GitHub's write-up
+    and PyPA's, and github.py is asked directly on top of that. Keyed on the
+    CVE, those become one finding.
     """
     kept: dict[str, Vulnerability] = {}
     for vulnerability in vulnerabilities:
+        # Fall back to the record's own id when there is no CVE, so records
+        # that cannot be correlated stay separate instead of collapsing.
         key = cve_of(vulnerability) or vulnerability.id
         existing = kept.get(key)
         kept[key] = vulnerability if existing is None else _combined(existing, vulnerability)
@@ -78,22 +80,22 @@ def dedupe(vulnerabilities: list[Vulnerability]) -> list[Vulnerability]:
 def _combined(first: Vulnerability, second: Vulnerability) -> Vulnerability:
     """One record from two copies, keeping what each of them answered.
 
-    Choosing a copy whole loses the half that was fetched to fill a gap: OSV
-    often carries a patched version with no severity word, and GitHub the
-    severity with no patched version for our package. Picking either one alone
-    tells the user how bad it is without saying what to upgrade to, or the
-    reverse.
-
-    The copy answering more questions supplies the identity - id, url, source -
-    and anything still blank on it is taken from the other.
+    Choosing one copy whole loses the half that was fetched to fill the gap.
+    OSV often carries a patched version with no severity word; GitHub carries
+    the severity with no patched version for our package. Pick either alone and
+    the user is told how bad it is without being told what to upgrade to, or
+    the reverse.
     """
+    # The copy answering more questions supplies the identity - id, url,
+    # source - so the finding links to the more useful write-up.
     base, other = (first, second) if _answered(first) >= _answered(second) else (second, first)
+    # Then fill every remaining blank from the other copy, field by field.
     return replace(
         base,
         severity=base.severity if base.severity != UNKNOWN_SEVERITY else other.severity,
         fixed_versions=base.fixed_versions or other.fixed_versions,
         summary=base.summary or other.summary,
-        aliases=base.aliases | other.aliases,
+        aliases=base.aliases | other.aliases,  # union, so later dedupes still match
     )
 
 

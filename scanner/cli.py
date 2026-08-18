@@ -34,15 +34,53 @@ PACKAGE_LOCK = "package-lock.json"
 YARN_LOCK = "yarn.lock"
 JAVASCRIPT_MANIFESTS = ("package.json", PACKAGE_LOCK, YARN_LOCK)
 
-# Lock files from package managers this does not read. Named so that pointing
-# at one gets an answer about pnpm rather than a complaint about requirements
-# file syntax.
-UNSUPPORTED_LOCKS = ("pnpm-lock.yaml", "bun.lockb", "shrinkwrap.yaml")
+SUPPORTED = "requirements.txt, package.json (with package-lock.json or yarn.lock)"
+
+# Manifests other tools write, named so that pointing at one gets an answer
+# about that format instead of a complaint about requirements file syntax.
+# The value is the command that produces something this can read, where one
+# exists; None means the whole ecosystem is unsupported.
+OTHER_FORMATS = {
+    "poetry.lock": "poetry export -f requirements.txt --output requirements.txt",
+    "Pipfile.lock": "pipenv requirements > requirements.txt",
+    "pnpm-lock.yaml": None,
+    "bun.lockb": None,
+    "shrinkwrap.yaml": None,
+    "go.mod": None,
+    "go.sum": None,
+    "Gemfile.lock": None,
+    "Cargo.lock": None,
+    "composer.lock": None,
+}
 
 
 def note(message: str) -> None:
     """Progress, on stderr so it never mixes into the report on stdout."""
     print(message, file=sys.stderr, flush=True)
+
+
+def _why_unreadable(name: str) -> str | None:
+    """Why this filename cannot be scanned, or None when it can be.
+
+    Recognising manifests positively, and refusing everything else, is the
+    point of this function. The requirements.txt reader is permissive by
+    design - a bare `flask` with no version is a legal requirement - so if an
+    unrecognised file reached it, an entire manifest of some other format
+    would parse as nothing and be reported as a clean scan.
+
+    A pip requirements file has no fixed name: `requirements.txt`,
+    `requirements-dev.txt` and `constraints.txt` are all conventions. So any
+    `.txt` is accepted, and the check is on everything that is not one.
+    """
+    if name in JAVASCRIPT_MANIFESTS or name.endswith(".txt"):
+        return None
+
+    if name in OTHER_FORMATS:
+        message = f"{name} is not a format this reads. Supported: {SUPPORTED}"
+        export = OTHER_FORMATS[name]
+        return f"{message}\n  to scan this project, run: {export}" if export else message
+
+    return f"{name} is not a manifest this recognises. Supported: {SUPPORTED}"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -110,9 +148,14 @@ def _read(manifest: Path) -> tuple[ParseResult, DependencyGraph]:
     while a lock file names versions somebody already committed. Pretending
     they are the same shape would obscure the reason npm needs no resolver.
     """
+    # The fork. Everything below this function works on a graph and never
+    # learns which ecosystem produced it.
     if manifest.name in JAVASCRIPT_MANIFESTS:
+        # A lock file already names versions, so this returns a finished graph.
         return _read_javascript(manifest)
 
+    # requirements.txt names ranges, so parsing is only half the job - the
+    # resolver has to turn them into versions by walking PyPI.
     parsed = requirements_txt.parse(manifest)
     note("resolving...")
     return parsed, resolve(parsed.dependencies, PyPIClient().fetch)
@@ -127,9 +170,12 @@ def _read_javascript(manifest: Path) -> tuple[ParseResult, DependencyGraph]:
     """
     directory = manifest.parent
 
-    if manifest.name == YARN_LOCK or (
-        (directory / YARN_LOCK).exists() and not (directory / PACKAGE_LOCK).exists()
-    ):
+    pointed_at_yarn = manifest.name == YARN_LOCK
+    yarn_is_the_only_lock = (directory / YARN_LOCK).exists() and not (
+        directory / PACKAGE_LOCK
+    ).exists()
+
+    if pointed_at_yarn or yarn_is_the_only_lock:
         return yarn_lock.parse(manifest)
     return package_lock.parse(manifest)
 
@@ -153,13 +199,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: not a file: {args.manifest}", file=sys.stderr)
         return EXIT_USAGE_ERROR
 
-    if args.manifest.name in UNSUPPORTED_LOCKS:
-        print(
-            f"error: {args.manifest.name} is not supported. "
-            "Supported manifests: requirements.txt, "
-            "package.json (with package-lock.json or yarn.lock)",
-            file=sys.stderr,
-        )
+    # Refuse anything we do not recognise, rather than letting it reach the
+    # requirements reader and be reported as a clean scan of nothing.
+    unreadable = _why_unreadable(args.manifest.name)
+    if unreadable:
+        print(f"error: {unreadable}", file=sys.stderr)
         return EXIT_USAGE_ERROR
 
     # Everything below reports progress on stderr, so that stdout carries only
@@ -175,17 +219,21 @@ def main(argv: list[str] | None = None) -> int:
         # found" rather than "never looked".
         note("note: a lock file carries no release dates, so --stale-after finds nothing")
 
+    # Failed lookups have no version, and OSV matches exact versions only.
     packages = [node.key for node in graph.nodes.values() if not node.failed]
     note(f"checking {len(packages)} packages against OSV...")
+    # This is the slow line: one request per package, sequentially.
     osv = OSVClient().query(packages)
 
-    # GitHub is only asked about the findings OSV left incomplete, so this is
+    # GitHub is only asked about findings OSV left incomplete, so this is
     # usually a handful of requests rather than one per package.
     github = GHSAClient().fill_gaps(osv.findings)
 
     report = build(
         manifest=args.manifest,
         graph=graph,
+        # merge folds both sources into one list per package and collapses the
+        # duplicate records, so the report never sees two copies of one CVE.
         findings=merge([osv, github]),
         source_errors={"osv": osv.error, "github": github.error},
         parsed=parsed,

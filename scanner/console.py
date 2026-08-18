@@ -50,8 +50,9 @@ def _header(summary: dict) -> list[str]:
     actually happened.
     """
     manifest = f"{summary['requirements']} requirements"
-    # A manifest can name the same package twice. Saying so is the only way a
-    # reader gets from the line count to the package count.
+    # Only printed when the two numbers differ. A manifest can name the same
+    # package twice, and a monorepo counts workspace packages as direct too,
+    # so this is what gets a reader from the line count to the package count.
     requested = summary["packages_requested"]
     if requested and requested != summary["requirements"]:
         manifest += f" ({requested} package{'' if requested == 1 else 's'})"
@@ -75,10 +76,10 @@ def _print_findings(console: Console, report: dict) -> None:
     if report["ignored"]["count"]:
         ignored = f" ({report['ignored']['count']} ignored)"
 
-    # "Nothing found" and "nothing shown" are different answers. A severity
-    # filter can empty the list while the scan is still failing, and saying
-    # `no known vulnerabilities` there would contradict both the JSON and the
-    # exit code - a scanner claiming clean when it is not.
+    # Decided on the *count*, never on `len(report["findings"])`. Those differ
+    # whenever --min-severity hides everything: the list is empty but the scan
+    # still failed. Printing "no known vulnerabilities" there would contradict
+    # both the JSON and the exit code.
     if not summary["total_vulnerabilities"]:
         console.print(f"\nno known vulnerabilities{ignored}")
         return

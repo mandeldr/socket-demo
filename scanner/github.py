@@ -71,6 +71,8 @@ class GHSAClient:
 
     def _advisory(self, cve: str) -> tuple[dict | None, str | None]:
         """The advisory for one CVE. Returns (advisory, error)."""
+        # Cache hit includes a stored None, which means "asked, no advisory".
+        # `in` rather than `.get()` so a cached miss is not re-requested.
         if cve in self._cache:
             return self._cache[cve], None
 
@@ -86,10 +88,12 @@ class GHSAClient:
                 timeout=self.timeout,
             )
             if response.status_code != 200:
-                # Not cached: a rate limit or a server error says nothing about
-                # whether this CVE has an advisory.
+                # Deliberately not cached: a rate limit or a server error says
+                # nothing about whether this CVE has an advisory.
                 return None, _error_for(response, bool(self.token))
             advisories = response.json()
+            # Querying by cve_id returns a list of at most one match. An empty
+            # list is a real answer, so cache the None too.
             self._cache[cve] = advisories[0] if advisories else None
             return self._cache[cve], None
         except ValueError:
@@ -101,9 +105,13 @@ class GHSAClient:
 def _gaps(findings: dict[PackageKey, list[Vulnerability]]) -> Iterator[tuple[PackageKey, str]]:
     """The findings worth asking GitHub about, as (package, cve) pairs.
 
-    Worth asking means two things: OSV left something out, and there is a CVE
-    to look the advisory up by. A finding with neither problem is skipped, and
-    a finding with no CVE cannot be looked up at all.
+    Worth asking means two things at once: there is a CVE to key the request
+    on, and OSV left something out. A complete finding is skipped because
+    GitHub has nothing to add; a finding with no CVE is skipped because there
+    is no way to look it up.
+
+    This filter is why a 1,073-package scan needs only a handful of GitHub
+    requests and stays inside the unauthenticated hourly limit.
     """
     for package, vulnerabilities in findings.items():
         for vulnerability in vulnerabilities:
@@ -149,19 +157,19 @@ def _patched_version(advisory: dict, package: PackageKey) -> str | None:
     """The fix for this package specifically.
 
     One advisory can cover several packages and patch them at different
-    versions, so the entry matching the package being enriched is the one that
-    matters - and matching means the ecosystem as well as the name, since a CVE
-    is routinely filed against the npm package and the PyPI one at once.
-
-    An entry with no ecosystem is matched on name alone. Advisories captured
-    before GitHub always sent the field still resolve today, and dropping them
-    would lose fixes we currently report.
+    versions, so we want the entry for *our* package - matching on ecosystem as
+    well as name, since a CVE is routinely filed against the npm package and
+    the PyPI one at once.
     """
+    # Translate our ecosystem into GitHub's spelling: PyPI -> pip.
     wanted = GITHUB_ECOSYSTEMS.get(package.ecosystem)
 
     for entry in advisory.get("vulnerabilities") or []:
         named = entry.get("package") or {}
         ecosystem = named.get("ecosystem")
+        # Note `if ecosystem and ...`: an entry with no ecosystem field falls
+        # through to the name check rather than being rejected. Older captured
+        # advisories omit it, and dropping those would lose fixes we report today.
         if ecosystem and ecosystem != wanted:
             continue
         if canonical_name(named.get("name") or "", package.ecosystem) == package.name:

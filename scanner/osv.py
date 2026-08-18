@@ -30,17 +30,22 @@ class OSVClient:
         """Find the known vulnerabilities affecting each package."""
         findings: dict[PackageKey, list[Vulnerability]] = {}
 
+        # One request per package. This loop is where a large scan spends
+        # almost all of its wall clock - roughly 0.2s each, sequentially.
         for package in packages:
             # OSV matches an exact version, so a package that never resolved to
-            # one cannot be asked about.
+            # one cannot be asked about. It appears under "unresolved" instead.
             if not package.version:
                 continue
 
             records, error = self._records(package)
             if error:
-                # Keep what was found before the failure and say it is partial.
+                # Stop at the first failure, but hand back what we already have
+                # and let the caller label the answer partial.
                 return QueryResult(findings, error=error)
             if records:
+                # OSV aggregates several databases, so the same CVE usually
+                # arrives more than once. dedupe collapses those.
                 findings[package] = dedupe([_vulnerability(r, package) for r in records])
 
         return QueryResult(findings)
@@ -99,20 +104,24 @@ def _fixed_versions(record: dict, package: PackageKey) -> list[str]:
     """The releases that carry the fix.
 
     OSV describes an affected range as a flat list of events: `introduced`
-    opens a range and `fixed` closes it. A range with no `fixed` event means no
-    patched release exists, and returning nothing says that honestly.
+    opens a range and `fixed` closes it. A range with no `fixed` event means
+    no patched release exists, and returning nothing says that honestly.
 
-    Git ranges are skipped because their versions are commit hashes, and
-    telling someone to upgrade to a commit sha is not useful advice.
+    Three levels of nesting, because one advisory covers many packages, each
+    with many ranges, each with many events.
     """
     versions: list[str] = []
     for affected in record.get("affected") or []:
+        # Skip entries about other packages or other ecosystems entirely.
         if not _covers(affected, package):
             continue
         for entry in affected.get("ranges") or []:
+            # Git range versions are commit hashes, and "upgrade to f05b1329"
+            # is not advice anyone can act on.
             if entry.get("type") == "GIT":
                 continue
             for event in entry.get("events") or []:
+                # Several maintained branches give several fixes, all valid.
                 if "fixed" in event and event["fixed"] not in versions:
                     versions.append(event["fixed"])
     return versions
@@ -123,11 +132,13 @@ def _covers(affected: dict, package: PackageKey) -> bool:
 
     One advisory routinely spans ecosystems - a jQuery flaw is filed against
     the npm package, the NuGet one, the Ruby gem and the Django that vendors
-    it. Their fixed versions are unrelated to ours.
+    it. Their fixed versions have nothing to do with ours.
 
-    The name is normalized with the rule for the ecosystem being compared, not
-    PyPI's: `lodash.merge` read as `lodash-merge` matches nothing, and the fix
-    quietly vanishes from a finding we still report.
+    Both halves matter. Ecosystem alone is not enough (`requests` exists on
+    PyPI and npm and they are different projects), and name alone is not
+    either. The name is normalized with the rule for *this* ecosystem: reading
+    `lodash.merge` as `lodash-merge` matches nothing, and the fix quietly
+    vanishes from a finding we still report.
     """
     named = affected.get("package") or {}
     return (
@@ -139,11 +150,13 @@ def _covers(affected: dict, package: PackageKey) -> bool:
 def _severity(record: dict) -> str:
     """A severity worth printing.
 
-    Two fields carry one and they hold different things. `database_specific`
-    has the word the publishing database assigned, which is what a person wants
-    to read. The other holds CVSS vector strings, which are precise but are not
-    a bucket a summary can count, so a record with only those is left unknown
-    and GitHub is asked to fill it in.
+    Two fields on an OSV record carry severity and they hold different things.
+    `database_specific.severity` is the word the publishing database assigned,
+    which is what a person wants to read. `severity` holds CVSS vector strings
+    - precise, but not a bucket a summary can count.
+
+    So the vector array is deliberately ignored here. A record carrying only
+    that is left UNKNOWN, and github.py is asked to fill it in.
     """
     specific = record.get("database_specific") or {}
     if specific.get("severity"):

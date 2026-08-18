@@ -24,16 +24,16 @@ from scanner.models import Dependency, PackageKey
 class PackageMetadata:
     """What a registry knows about one package, or why we could not find out.
 
-    Carrying the reason rather than just None means the report can tell a user
-    the difference between "that package does not exist" and "no release of it
-    satisfies the version you pinned", which need different fixes.
+    Carrying the reason as text is what lets the report distinguish "that
+    package does not exist" from "no release satisfies the version you
+    pinned". Those need different fixes, and the second one is how the
+    Exercise 01 manifest fails.
     """
 
-    version: str | None = None
-    requirements: list[Requirement] = field(default_factory=list)
-    error: str | None = None
-    # When the project last published anything, which is what tells you it has
-    # been abandoned. None when the registry did not say.
+    version: str | None = None  # the release we settled on
+    requirements: list[Requirement] = field(default_factory=list)  # what it needs
+    error: str | None = None  # set instead of version when the lookup failed
+    # Newest release across the whole project, for --stale-after.
     last_release: datetime | None = None
 
     @property
@@ -47,19 +47,19 @@ Fetch = Callable[[str, SpecifierSet, frozenset[str]], PackageMetadata]
 
 
 def _required_packages(metadata: PackageMetadata) -> list[tuple[str, SpecifierSet, frozenset[str]]]:
-    """What a package requires, one entry per required package.
+    """Collapse one package's requires_dist into one entry per required package.
 
-    A package can name the same requirement more than once under different
-    markers - `foo<2; python_version<"3.9"` beside `foo>=2` - and those are
-    constraints on one package, not two. Extras are unioned for the same
-    reason: `celery[redis]` and `celery[auth]` are one celery with both.
-
-    Unconditional requirements are folded in first, so the order they happen to
-    appear in `requires_dist` cannot change the answer.
+    A package can name the same requirement twice under different markers -
+    `foo<2; python_version<"3.9"` beside `foo>=2` - and those are two
+    constraints on one package, not two packages. Extras get unioned for the
+    same reason: `celery[redis]` and `celery[auth]` are one celery with both.
     """
     specs: dict[str, SpecifierSet] = {}
     extras: dict[str, frozenset[str]] = {}
 
+    # `marker is not None` sorts False before True, so unconditional
+    # requirements are folded in first. Without that, the order they happen to
+    # sit in requires_dist would change the answer.
     for requirement in sorted(metadata.requirements, key=lambda r: r.marker is not None):
         name = canonicalize_name(requirement.name)
         specs[name] = _narrowed(specs.get(name, SpecifierSet()), requirement)
@@ -71,19 +71,23 @@ def _required_packages(metadata: PackageMetadata) -> list[tuple[str, SpecifierSe
 def _narrowed(so_far: SpecifierSet, requirement: Requirement) -> SpecifierSet:
     """Fold one more requirement into what is already asked of a package.
 
-    A marker-guarded requirement applies in some environments and not others,
-    and this walks a superset of environments rather than resolving for one.
-    So its constraint is taken only while the result stays satisfiable:
+    A marker-guarded requirement only applies in some environments, and we
+    walk a superset of environments instead of resolving for this machine. So
+    a guarded constraint is taken only while the result stays satisfiable:
     `foo<2; python_version<"3.9"` beside `foo>=2` is not a conflict pip would
-    ever see, and reporting one would be inventing a problem rather than
-    finding it.
+    ever see, and reporting one would be inventing a problem.
 
-    Two unconditional requirements that disagree are a real conflict and are
-    left to become unsatisfiable, which is what the caller reports.
+    NOTE: this guard only applies *within* one package's requires_dist. Two
+    different packages contributing mutually exclusive marker branches still
+    get intersected in the main loop below, which can produce a spurious
+    conflict. Known limitation.
     """
     combined = so_far & requirement.specifier
+    # Guarded and now impossible: drop it and keep what we had.
     if requirement.marker is not None and combined.is_unsatisfiable():
         return so_far
+    # Unconditional constraints are allowed to become unsatisfiable - that is
+    # a real conflict, and the caller reports it.
     return combined
 
 
@@ -99,20 +103,17 @@ def _queue_requirements(
 
 
 class _Lookup(NamedTuple):
-    """A package waiting to be looked up, and how we got to it.
+    """One queue entry: a package waiting to be looked up, and how we got to it.
 
-    It carries a name and a constraint but no version, because the version is
-    what the lookup is for. Once it has one it becomes a PackageKey.
-
-    A NamedTuple rather than a plain tuple so the five values are named and
-    type-checked; the loop unpacks it positionally.
+    Carries a name and a constraint but no version - the version is what the
+    lookup is *for*. Once it has one it becomes a PackageKey.
     """
 
     name: str
-    spec: SpecifierSet
+    spec: SpecifierSet  # what this particular requester asked for
     extras: frozenset[str]
-    depth: int
-    parent: PackageKey | None
+    depth: int  # hops from the manifest
+    parent: PackageKey | None  # None for a direct dependency
 
 
 def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
@@ -142,56 +143,66 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
     share the graph, not the loop.
     """
     graph = DependencyGraph()
+    # Every direct dependency goes in at depth 0 *before* the loop starts.
+    # That is why a package that is both a manifest pin and a transitive
+    # requirement always settles as direct - it is popped first.
     queue = deque(
-        # raw_spec carries the constraint from the manifest, so `flask==3.0.0`
-        # resolves to 3.0.0 rather than whatever is currently latest
+        # raw_spec carries the manifest's own constraint, so `flask==3.0.0`
+        # resolves to 3.0.0 and not to whatever is latest today.
         _Lookup(dep.name, SpecifierSet(dep.raw_spec), dep.extras, 0, None)
         for dep in direct
     )
 
-    # Everything asked of each package so far, and what we settled on. A
-    # package is looked up once, against all of it.
-    constraints: dict[str, SpecifierSet] = {}
-    requested_extras: dict[str, frozenset[str]] = {}
-    resolved: dict[str, PackageKey] = {}
+    # The three pieces of state the walk carries, all keyed by package name:
+    constraints: dict[str, SpecifierSet] = {}  # everything asked of it so far
+    requested_extras: dict[str, frozenset[str]] = {}  # every extra asked for
+    resolved: dict[str, PackageKey] = {}  # what we settled on; also the visited set
 
     while queue:
         name, spec, extras, depth, parent = queue.popleft()
-        # Canonicalized here rather than trusted from the caller: these dicts
-        # are keyed by name, and `Flask` and `flask` are one package.
+        # Canonicalize here rather than trusting the caller: these dicts are
+        # keyed by name, and `Flask` and `flask` have to hit the same entry.
         name = canonicalize_name(name)
 
-        # Fold this request into everything already asked of the package, so it
-        # is looked up once against all of it rather than once per requester.
+        # Fold this request into everything already asked of the package. `&`
+        # intersects the specifier sets, so `==2.2.1` and `<3,>=1.21.1` become
+        # `<3,==2.2.1,>=1.21.1`. This is what makes one lookup serve every
+        # requester instead of one lookup each.
         constraint = constraints[name] = constraints.get(name, SpecifierSet()) & spec
         asked_before = requested_extras.get(name, frozenset())
         all_extras = requested_extras[name] = asked_before | extras
 
+        # --- case 1: we have already settled this package ------------------
         settled = resolved.get(name)
         if settled is not None:
+            # Still record the edge. This is what keeps dependents_of complete.
             graph.link(parent, settled)
 
             if settled.version and not constraint.contains(settled.version):
-                # Something now wants a version we have already ruled out. Say
-                # so, rather than quietly carrying the package twice.
+                # Something now wants a version we already ruled out. We do not
+                # backtrack, so say so instead of quietly carrying two versions.
                 graph.errors.append(ResolutionError(name, f"conflicting constraints: {constraint}"))
 
             if all_extras > asked_before:
-                # A newly requested extra adds requirements without changing
-                # the version, so the answer grows instead of being redone.
+                # A newly requested extra adds requirements without changing the
+                # version, so the answer grows instead of being redone. `>` is a
+                # strict superset test: only re-fetch if the set actually grew.
                 _queue_requirements(queue, fetch(name, constraint, all_extras), depth, settled)
             continue
 
+        # --- case 2: the constraints already rule out every version --------
         if constraint.is_unsatisfiable():
-            # No version can satisfy all of it - `<=0.7.1` beside `==1.5.0`.
-            # Record the package so the report can name it, and move on.
+            # `<=0.7.1` beside `==1.5.0`. No point asking PyPI. Record the
+            # package with version=None so the report can still name it.
             key = PackageKey(name, None, Ecosystem.PYTHON)
-            resolved[name] = key
+            resolved[name] = key  # mark it settled so we do not retry
             graph.link(parent, key)
             graph.add_node(key, depth, parent=parent, failed=True)
             graph.errors.append(ResolutionError(name, f"conflicting constraints: {constraint}"))
             continue
 
+        # --- case 3: a package we have not seen before ---------------------
+        # The only branch that touches the network.
         metadata = fetch(name, constraint, all_extras)
         key = PackageKey(name, metadata.version, Ecosystem.PYTHON)
         resolved[name] = key
@@ -205,8 +216,13 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
         )
 
         if metadata.ok:
+            # Queue what it needs, one depth deeper, with this package as parent.
             _queue_requirements(queue, metadata, depth, key)
         else:
+            # A failed lookup is recorded and the walk continues - one missing
+            # package must not stop the rest of the scan.
             graph.errors.append(ResolutionError(name, metadata.error or "unknown error"))
 
+    # The loop ends when the queue drains. `resolved` is what bounds it: every
+    # package is fetched at most once, so there is no need for a depth limit.
     return graph
