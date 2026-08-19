@@ -120,6 +120,32 @@ def test_the_header_leaves_out_clauses_that_are_zero() -> None:
     assert "unresolved" not in text
 
 
+def test_a_conflict_is_printed_apart_from_a_failure_to_resolve() -> None:
+    """One says "scanned, at this version, and something disagrees"; the other
+    says "never scanned". Printing them under one heading told a reader the
+    scan had failed on a package it had just listed 44 findings for."""
+    graph = graph_with("django")
+    graph.errors.append(ResolutionError("django", "conflicting constraints: >=5.2", "4.2.7"))
+    graph.errors.append(ResolutionError("ghost", "no such package on PyPI"))
+
+    text = render(report_for(graph, {}, requirements=2))
+
+    assert "conflicts 1" in text
+    assert "django 4.2.7: conflicting constraints: >=5.2" in text
+    assert "could not resolve 1:" in text
+    assert "ghost: no such package on PyPI" in text
+
+
+def test_a_conflict_is_not_counted_as_unresolved_in_the_header() -> None:
+    graph = graph_with("django")
+    graph.errors.append(ResolutionError("django", "conflicting constraints", "4.2.7"))
+
+    text = render(report_for(graph, {}, requirements=1))
+
+    assert "1 packages resolved (1 direct, 0 transitive)" in text
+    assert "unresolved" not in text
+
+
 def test_the_manifest_path_appears_once() -> None:
     text = render(report_for(graph_with("flask"), {}, requirements=1))
     assert text.count("requirements.txt") == 1

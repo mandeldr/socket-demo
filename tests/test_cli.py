@@ -12,7 +12,15 @@ from pathlib import Path
 import pytest
 from packaging.requirements import Requirement
 
-from scanner.cli import EXIT_OK, EXIT_USAGE_ERROR, EXIT_VULNERABILITIES_FOUND, build_parser, main
+from scanner.cli import (
+    EXIT_INCOMPLETE,
+    EXIT_INTERRUPTED,
+    EXIT_OK,
+    EXIT_USAGE_ERROR,
+    EXIT_VULNERABILITIES_FOUND,
+    build_parser,
+    main,
+)
 from scanner.enums import Source
 from scanner.models import Vulnerability
 from scanner.resolver import PackageMetadata
@@ -278,6 +286,72 @@ def test_ignoring_a_finding_does_clear_the_exit_code(
     path = manifest(tmp_path, "flask==1.0\n")
 
     assert main([str(path), "--ignore", "CVE-2025-1"]) == EXIT_OK
+
+
+def test_a_source_that_did_not_finish_does_not_exit_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    """The one place absence would look exactly like safety to the thing that
+    reads it. OSV unreachable finds nothing, and exiting 0 would turn an
+    outage into a passing build."""
+
+    class Unreachable:
+        def query(self, packages) -> QueryResult:
+            return QueryResult(error="could not reach OSV (ConnectionError)")
+
+    monkeypatch.setattr("scanner.cli.OSVClient", Unreachable)
+    path = manifest(tmp_path, "flask==1.0\n")
+
+    assert main([str(path)]) == EXIT_INCOMPLETE
+
+
+def test_a_finding_outranks_an_incomplete_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    """Both are true, and the finding is the more actionable of the two."""
+
+    class FindsSomethingThenFails:
+        def query(self, packages) -> QueryResult:
+            return QueryResult({packages[0]: [_finding_for_test()]}, error="OSV returned HTTP 500")
+
+    monkeypatch.setattr("scanner.cli.OSVClient", FindsSomethingThenFails)
+    path = manifest(tmp_path, "flask==1.0\n")
+
+    assert main([str(path)]) == EXIT_VULNERABILITIES_FOUND
+
+
+def test_a_manifest_that_read_as_nothing_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], offline: None
+) -> None:
+    """A requirements file that only includes others is the ordinary way to
+    land here, and it used to report a clean scan of a file nobody read."""
+    path = manifest(tmp_path, "-r base.txt\n-c constraints.txt\n")
+
+    assert main([str(path)]) == EXIT_USAGE_ERROR
+
+    err = capsys.readouterr().err
+    assert "nothing in requirements.txt could be read as a dependency" in err
+    assert "scan the files it names instead" in err
+
+
+def test_an_interrupted_scan_says_so_rather_than_raising(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    offline: None,
+) -> None:
+    """A thousand-package scan takes minutes, so Ctrl-C is a normal way to end
+    one. A traceback makes an ordinary decision look like a crash."""
+
+    class Interrupted:
+        def query(self, packages) -> QueryResult:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr("scanner.cli.OSVClient", Interrupted)
+    path = manifest(tmp_path, "flask==1.0\n")
+
+    assert main([str(path)]) == EXIT_INTERRUPTED
+    assert "interrupted" in capsys.readouterr().err
 
 
 # --- choosing a reader -----------------------------------------------------

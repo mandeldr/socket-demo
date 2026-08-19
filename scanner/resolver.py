@@ -128,10 +128,14 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
     a package whose extras grow later, which is looked up again for the extra
     requirements alone.
 
-    A package is resolved once, against every constraint anything has placed on
-    it. The manifest may pin `adlfs==2024.4.1` while a provider asks for
-    `adlfs>=2023.10.0`; answering those separately gives two versions where pip
-    installs one, so the constraints are combined before asking.
+    A package is resolved once. The manifest may pin `adlfs==2024.4.1` while a
+    provider asks for `adlfs>=2023.10.0`; answering those separately gives two
+    versions where pip installs one. Two things prevent that: `resolved` below
+    is the visited set, and every direct dependency is queued before the loop
+    starts, so a manifest pin is always popped first and always wins.
+
+    What this does not do is gather every constraint on a package before
+    choosing its version - see the note on the fold below.
 
     This looks like `manifests.walk` and deliberately is not shared with it.
     The shapes match; the invariants are opposite. This walk is keyed by
@@ -166,8 +170,15 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
 
         # Fold this request into everything already asked of the package. `&`
         # intersects the specifier sets, so `==2.2.1` and `<3,>=1.21.1` become
-        # `<3,==2.2.1,>=1.21.1`. This is what makes one lookup serve every
-        # requester instead of one lookup each.
+        # `<3,==2.2.1,>=1.21.1`.
+        #
+        # Be precise about what this buys, because it is less than it looks.
+        # This dict is written at pop time and a package is fetched at its
+        # *first* pop, so nothing has been folded in yet when the version is
+        # chosen. The combined set is what the conflict check below reads, and
+        # what an extras re-fetch is asked with - it is not what picks the
+        # version. Which release we settle on is decided by whichever requester
+        # the walk reaches first.
         constraint = constraints[name] = constraints.get(name, SpecifierSet()) & spec
         asked_before = requested_extras.get(name, frozenset())
         all_extras = requested_extras[name] = asked_before | extras
@@ -181,7 +192,11 @@ def resolve(direct: list[Dependency], fetch: Fetch) -> DependencyGraph:
             if settled.version and not constraint.contains(settled.version):
                 # Something now wants a version we already ruled out. We do not
                 # backtrack, so say so instead of quietly carrying two versions.
-                graph.errors.append(ResolutionError(name, f"conflicting constraints: {constraint}"))
+                # Carrying the settled version is what tells the report this
+                # package was scanned anyway, rather than skipped.
+                graph.errors.append(
+                    ResolutionError(name, f"conflicting constraints: {constraint}", settled.version)
+                )
 
             if all_extras > asked_before:
                 # A newly requested extra adds requirements without changing the

@@ -35,10 +35,20 @@ class GraphNode:
 
 @dataclass
 class ResolutionError:
-    """A package the walk could not settle on, and why."""
+    """Something the walk has to say about a package, and what it was.
+
+    Two different things end up in this list and they mean opposite things. A
+    package with no version was never scanned. A package that settled and then
+    met a constraint disagreeing with the choice *was* scanned, at
+    `settled_version`. Reporting both as "could not resolve" claims the tool
+    failed on a package whose vulnerabilities it is listing on the same page.
+    """
 
     package: str
     error: str
+    # The version already chosen when the conflict was found. None means
+    # nothing was chosen, so there is genuinely nothing to scan.
+    settled_version: str | None = None
 
 
 @dataclass

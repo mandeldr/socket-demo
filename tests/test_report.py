@@ -383,6 +383,36 @@ def test_the_unresolved_count_is_in_the_summary() -> None:
     assert report_for(graph, {})["summary"]["unresolved"] == 1
 
 
+def test_a_conflict_is_not_reported_as_unresolved() -> None:
+    """The package resolved and was scanned. Listing it under "could not
+    resolve" contradicts the findings printed for it."""
+    graph = graph_with("django")
+    graph.errors.append(
+        ResolutionError("django", "conflicting constraints: ==4.2.7,>=5.2", "4.2.7")
+    )
+
+    report = report_for(graph, {})
+
+    assert report["unresolved"] == []
+    assert report["conflicts"] == [
+        {
+            "package": "django",
+            "version": "4.2.7",
+            "reason": "conflicting constraints: ==4.2.7,>=5.2",
+        }
+    ]
+    assert report["summary"]["unresolved"] == 0
+    assert report["summary"]["conflicts"] == 1
+
+
+def test_a_conflicting_package_is_still_counted_as_scanned() -> None:
+    """Which is the whole reason it cannot be listed as unresolved."""
+    graph = graph_with("django")
+    graph.errors.append(ResolutionError("django", "conflicting constraints", "4.2.7"))
+
+    assert report_for(graph, {})["summary"]["total_packages"] == 1
+
+
 # --- showing only what matters --------------------------------------------
 
 

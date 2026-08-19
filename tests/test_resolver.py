@@ -307,6 +307,30 @@ def test_constraints_that_cannot_all_be_met_are_reported() -> None:
     assert any("conflict" in e.error for e in graph.errors)
 
 
+def test_a_conflict_carries_the_version_that_was_kept() -> None:
+    """A conflict is not a failure to resolve: the package settled, was
+    scanned, and something later disagreed with the choice. Recording the
+    version is what lets the report say that instead of claiming it could not
+    resolve a package whose findings it prints on the same page."""
+    index = {"a": ["shared>=3.0"], "b": ["shared<2.0"], "shared": []}
+    versions = {"shared": ["1.0", "3.5"], "a": ["1.0"], "b": ["1.0"]}
+
+    graph = resolve(direct("a", "b"), versioned_index(index, versions))
+
+    (conflict,) = [e for e in graph.errors if e.package == "shared"]
+    assert conflict.settled_version == "3.5"
+    assert not graph.nodes[key("shared", "3.5")].failed
+
+
+def test_a_package_that_never_resolved_carries_no_version() -> None:
+    """The other kind of entry. Nothing was chosen, so nothing was scanned."""
+    graph = resolve(direct("ghost"), fake_index({}))
+
+    (missing,) = graph.errors
+    assert missing.settled_version is None
+    assert graph.nodes[key("ghost", None)].failed
+
+
 def test_a_package_appears_once_however_many_things_need_it() -> None:
     index = {f"p{i}": ["shared>=1.0"] for i in range(5)} | {"shared": []}
     versions = {"shared": ["2.0"], **{f"p{i}": ["1.0"] for i in range(5)}}

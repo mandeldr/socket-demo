@@ -34,6 +34,11 @@ def render(report: dict, show_skipped: bool = False, width: int | None = None) -
         console, f"unmaintained {len(report['unmaintained'])}:", _unmaintained_lines(report)
     )
     _print_section(
+        console,
+        f"conflicts {len(report['conflicts'])}, each scanned at the version shown:",
+        _conflict_lines(report),
+    )
+    _print_section(
         console, f"could not resolve {len(report['unresolved'])}:", _unresolved_lines(report)
     )
 
@@ -164,6 +169,17 @@ def _unmaintained_lines(report: dict) -> list[str]:
     ]
 
 
+def _conflict_lines(report: dict) -> list[str]:
+    """Packages that settled, then met a requirement disagreeing with the choice.
+
+    The version is printed because it is the answer to the question this
+    section raises: the package was scanned, and this is what it was scanned
+    as. We do not backtrack, so a constraint arriving afterwards is reported
+    rather than applied.
+    """
+    return [f"{x['package']} {x['version']}: {x['reason']}" for x in report["conflicts"]]
+
+
 def _unresolved_lines(report: dict) -> list[str]:
-    """Packages the resolver could not settle on, with the reason."""
+    """Packages that never got a version, with the reason. Nothing was scanned."""
     return [f"{x['package']}: {x['reason']}" for x in report["unresolved"]]

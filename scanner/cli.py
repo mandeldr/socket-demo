@@ -27,6 +27,12 @@ from scanner.sources import merge
 EXIT_OK = 0
 EXIT_VULNERABILITIES_FOUND = 1
 EXIT_USAGE_ERROR = 2
+# A source that did not finish means the scan is incomplete, and "nothing
+# found" is not the same thing as "nothing there". Its own code, so a pipeline
+# can tell an unproven clean from a real one without it reading as a finding.
+EXIT_INCOMPLETE = 3
+# What a shell reports for a process stopped by Ctrl-C.
+EXIT_INTERRUPTED = 130
 
 # Filenames that mean JavaScript. Any of them is accepted, since they sit in
 # one directory and each names the others.
@@ -35,6 +41,11 @@ YARN_LOCK = "yarn.lock"
 JAVASCRIPT_MANIFESTS = ("package.json", PACKAGE_LOCK, YARN_LOCK)
 
 SUPPORTED = "requirements.txt, package.json (with package-lock.json or yarn.lock)"
+
+# pip options that name another requirements file rather than a package. A file
+# built only from these resolves to nothing, which is why they are worth
+# naming when a scan comes back empty.
+INCLUDE_OPTIONS = ("-r", "--requirement", "-c", "--constraint")
 
 # Manifests other tools write, named so that pointing at one gets an answer
 # about that format instead of a complaint about requirements file syntax.
@@ -186,24 +197,88 @@ def main(argv: list[str] | None = None) -> int:
     Returns an exit code rather than calling sys.exit() directly, so that
     tests can call main() and assert on the result.
     """
-    args = build_parser().parse_args(argv)
+    try:
+        return _scan(build_parser().parse_args(argv))
+    except KeyboardInterrupt:
+        # A large scan takes minutes, so Ctrl-C is an ordinary way to end one.
+        # It should read as a decision, not as the tool falling over.
+        print("\ninterrupted", file=sys.stderr)
+        return EXIT_INTERRUPTED
 
-    # argparse handles missing/invalid arguments itself (and exits 2).
-    # What it cannot check is whether the file actually exists, so do that
-    # here and fail with a readable message instead of a traceback.
-    if not args.manifest.exists():
-        print(f"error: no such file: {args.manifest}", file=sys.stderr)
-        return EXIT_USAGE_ERROR
 
-    if not args.manifest.is_file():
-        print(f"error: not a file: {args.manifest}", file=sys.stderr)
-        return EXIT_USAGE_ERROR
+def _refuse(manifest: Path) -> str | None:
+    """Why this file cannot be scanned at all, or None when it can be.
 
+    Every check that can be made before reading a byte, in one place, so the
+    scan below reads as a straight line.
+    """
+    # argparse handles missing and invalid arguments itself (and exits 2).
+    # What it cannot check is whether the file actually exists.
+    if not manifest.exists():
+        return f"no such file: {manifest}"
+    if not manifest.is_file():
+        return f"not a file: {manifest}"
     # Refuse anything we do not recognise, rather than letting it reach the
     # requirements reader and be reported as a clean scan of nothing.
-    unreadable = _why_unreadable(args.manifest.name)
-    if unreadable:
-        print(f"error: {unreadable}", file=sys.stderr)
+    return _why_unreadable(manifest.name)
+
+
+def _nothing_was_read(manifest: Path, parsed: ParseResult, graph: DependencyGraph) -> str | None:
+    """Why an apparently readable manifest yielded nothing, or None if it did.
+
+    The file had lines, none of them became a dependency, and nothing
+    installs. "No known vulnerabilities" here would be a clean bill of health
+    for a file nobody read - the same failure as scanning a poetry.lock as an
+    empty requirements file. An empty manifest is not this: it has no skipped
+    lines, and genuinely asks for nothing.
+    """
+    if parsed.dependencies or graph.nodes or not parsed.skipped:
+        return None
+
+    lines = [
+        f"nothing in {manifest.name} could be read as a dependency, "
+        f"and {len(parsed.skipped)} lines were skipped"
+    ]
+    lines += [f"  {line.content}  ({line.reason.value})" for line in parsed.skipped[:3]]
+    if any(line.content.startswith(INCLUDE_OPTIONS) for line in parsed.skipped):
+        # By far the most likely reason to land here: the common layout where
+        # the top-level file only names the real ones.
+        lines.append("  this file only includes others; scan the files it names instead")
+    return "\n".join(lines)
+
+
+def _exit_code(report: dict) -> int:
+    """What the shell is told, which is the only part of this a pipeline reads.
+
+    Read from the summary rather than the printed findings: --min-severity
+    decides what is shown, and a display flag that could turn a failing build
+    green would be a way to silence CI.
+    """
+    if report["summary"]["total_vulnerabilities"]:
+        # A finding is the strongest thing the scan has to say, so it wins even
+        # when a source was incomplete: there is something to act on either way.
+        return EXIT_VULNERABILITIES_FOUND
+
+    if report["sources"]["failed"]:
+        # Nothing was found, but not everything was asked. Exiting 0 here would
+        # turn an outage, a rate limit or a proxy into a clean bill of health -
+        # the one place where absence would look exactly like safety to the
+        # thing that reads it, which is a build.
+        return EXIT_INCOMPLETE
+
+    return EXIT_OK
+
+
+def _scan(args: argparse.Namespace) -> int:
+    """The whole command, once its arguments are known.
+
+    Reads as the pipeline does: refuse what cannot be scanned, read the
+    manifest into a graph, ask each source about it, render the one report
+    both formats come from.
+    """
+    refusal = _refuse(args.manifest)
+    if refusal:
+        print(f"error: {refusal}", file=sys.stderr)
         return EXIT_USAGE_ERROR
 
     # Everything below reports progress on stderr, so that stdout carries only
@@ -212,6 +287,11 @@ def main(argv: list[str] | None = None) -> int:
         parsed, graph = _read(args.manifest)
     except ManifestError as error:
         print(f"error: {error}", file=sys.stderr)
+        return EXIT_USAGE_ERROR
+
+    empty = _nothing_was_read(args.manifest, parsed, graph)
+    if empty:
+        print(f"error: {empty}", file=sys.stderr)
         return EXIT_USAGE_ERROR
 
     if args.stale_after is not None and args.manifest.name in JAVASCRIPT_MANIFESTS:
@@ -247,19 +327,23 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(render(report, show_skipped=args.show_skipped))
 
-    if args.output:
-        try:
-            args.output.write_text(json.dumps(report, indent=2) + "\n")
-        except OSError as error:
-            # Not a traceback, and not exit 1: that is the code for "vulnerable
-            # dependency found", so a failed write here would fail a clean
-            # build and blame the dependencies.
-            print(f"error: could not write {args.output}: {error}", file=sys.stderr)
-            return EXIT_USAGE_ERROR
-        note(f"wrote {args.output}")
+    if args.output and not _written(report, args.output):
+        return EXIT_USAGE_ERROR
 
-    # Non-zero so a CI job fails on a vulnerable dependency, which is the whole
-    # point of running this in a pipeline. Counted from the summary rather than
-    # the printed findings: --min-severity decides what is shown, and a display
-    # flag that could turn a failing build green would be a way to silence CI.
-    return EXIT_VULNERABILITIES_FOUND if report["summary"]["total_vulnerabilities"] else EXIT_OK
+    return _exit_code(report)
+
+
+def _written(report: dict, path: Path) -> bool:
+    """Write the JSON copy, or say why it could not be written.
+
+    A failed write is a usage error, not exit 1: that code means "vulnerable
+    dependency found", so an unwritable path would fail a clean build and
+    blame the dependencies.
+    """
+    try:
+        path.write_text(json.dumps(report, indent=2) + "\n")
+    except OSError as error:
+        print(f"error: could not write {path}: {error}", file=sys.stderr)
+        return False
+    note(f"wrote {path}")
+    return True

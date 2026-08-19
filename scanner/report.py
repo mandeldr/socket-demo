@@ -36,6 +36,13 @@ def build(
     parsed = parsed or ParseResult()
     rules = {rule.strip().upper() for rule in ignore or []}
 
+    # Two kinds of entry share graph.errors and they are not the same news. A
+    # conflict was scanned, at the version named; an unresolved package has no
+    # version and was never asked about. Printing them as one list says the
+    # scan failed on packages whose findings are listed above it.
+    conflicts = [error for error in graph.errors if error.settled_version]
+    unresolved = [error for error in graph.errors if not error.settled_version]
+
     # Two filters, applied in order, and the difference between them is the
     # main idea in this module:
     #   `kept`  - survived --ignore. The user decided these do not count, so
@@ -61,7 +68,8 @@ def build(
             kept,
             parsed,
             len(graph.roots),
-            len(graph.errors),
+            len(unresolved),
+            len(conflicts),
             hidden_count,
             min_severity,
         ),
@@ -80,7 +88,13 @@ def build(
             for line in parsed.skipped
         ],
         "unmaintained": _unmaintained(resolved, now, stale_after_days),
-        "unresolved": [{"package": e.package, "reason": e.error} for e in graph.errors],
+        # Scanned, at the version named, but something later disagreed with it.
+        "conflicts": [
+            {"package": e.package, "version": e.settled_version, "reason": e.error}
+            for e in conflicts
+        ],
+        # No version at all, so never queried against an advisory database.
+        "unresolved": [{"package": e.package, "reason": e.error} for e in unresolved],
         "sources": {
             "queried": sorted(source_errors),
             "failed": {name: why for name, why in source_errors.items() if why},
@@ -137,6 +151,7 @@ def _summary(
     parsed: ParseResult,
     requested: int,
     unresolved: int,
+    conflicts: int,
     hidden: int,
     min_severity: str | None,
 ) -> dict:
@@ -157,6 +172,9 @@ def _summary(
         "packages_requested": requested,
         "skipped": len(parsed.skipped),
         "unresolved": unresolved,
+        # Counted apart from `unresolved` because these packages are inside
+        # `total_packages` - they resolved, and were scanned.
+        "conflicts": conflicts,
         "total_packages": len(resolved),
         "direct": len([n for n in resolved if n.depth == 0]),
         "transitive": len([n for n in resolved if n.depth > 0]),

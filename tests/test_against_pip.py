@@ -29,7 +29,10 @@ FIXTURE = Path(__file__).parent / "fixtures" / "requirements.txt"
 def what_uv_would_install(manifest: Path) -> dict[str, str]:
     """The pinned set `uv pip compile` produces, as {name: version}."""
     result = subprocess.run(
-        ["uv", "pip", "compile", str(manifest), "--no-annotate", "--no-header", "-o", "-"],
+        # No -o: uv writes to stdout by default. Passing `-o -` also writes a
+        # file literally named `-` into the working directory, which is how one
+        # got committed to this repo.
+        ["uv", "pip", "compile", str(manifest), "--no-annotate", "--no-header"],
         capture_output=True,
         text=True,
     )

@@ -192,6 +192,9 @@ def test_a_record_with_a_fix_is_not_beaten_by_one_without() -> None:
     (kept,) = dedupe([with_fix, with_severity])
 
     assert kept.fixed_versions == ["2.5.0"]
+    # The other half of the same sentence. Asserting only the fix let a
+    # `_combined` that returned one copy whole pass this test.
+    assert kept.severity == "HIGH"
 
 
 def test_a_record_with_both_beats_one_with_either() -> None:
@@ -248,3 +251,4 @@ def test_merging_two_sources_keeps_the_fix_and_the_severity() -> None:
     (found,) = merge([osv, github])[key("pkg")]
 
     assert found.fixed_versions == ["2.5.0"]
+    assert found.severity == "HIGH"

@@ -1,10 +1,13 @@
-# socket-demo
+# Dependency risk scanner
 
-Open Source Dependency Risk Scanner
+Scans a dependency manifest, resolves every package it installs — direct and
+transitive — and reports the ones with known vulnerabilities, what to upgrade,
+and what the scan could not read.
 
-Scans a dependency manifest, resolves direct and transitive dependencies, and
-reports packages linked to known vulnerabilities from OSV.dev and GitHub
-Security Advisories.
+Advisories come from [OSV.dev](https://osv.dev) and
+[GitHub Security Advisories](https://github.com/advisories). Nothing being
+scanned is ever downloaded or executed: metadata is read from PyPI's JSON API
+and from lock files, so scanning a hostile manifest cannot run its code.
 
 | Manifest | Read with |
 |---|---|
@@ -12,21 +15,31 @@ Security Advisories.
 | `package.json` + `package-lock.json` | lockfileVersion 2 and 3 |
 | `package.json` + `yarn.lock` | yarn 1 and berry |
 
+[Install](#install) · [Usage](#usage) · [Exit codes](#exit-codes) ·
+[Output](#output) · [What it does not do](#what-it-does-not-do) ·
+[Known limitations](#known-limitations) · [How it works](#how-it-works) ·
+[Design notes](#design-notes) ·
+[Verified against other tools](#verified-against-other-tools) ·
+[Development](#development)
+
 ## Install
+
+Python 3.10 or newer. Tested on 3.10, 3.12 and 3.14.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+python -m pip install -e ".[dev]"
 ```
 
-Python 3.10 or newer. Tested on 3.10, 3.12 and 3.14.
+Or with [uv](https://docs.astral.sh/uv/): `uv venv && uv pip install -e ".[dev]"`.
 
 ## Usage
 
 ```bash
 scanner requirements.txt
 scanner package.json          # reads the lock file sitting beside it
+scanner yarn.lock             # or point at the lock and the manifest is found
 ```
 
 One argument. Point it at a `package.json` and the lock beside it is found;
@@ -36,8 +49,7 @@ that can be scanned, and guessing which version it means would report
 vulnerabilities against packages nobody installed.
 
 Manifests are recognised by name, and anything unrecognised is refused rather
-than read. A `poetry.lock` or a `go.mod` names the format and, where there is
-one, the command that produces something scannable:
+than read:
 
 ```
 $ scanner poetry.lock
@@ -45,10 +57,6 @@ error: poetry.lock is not a format this reads. Supported: requirements.txt,
 package.json (with package-lock.json or yarn.lock)
   to scan this project, run: poetry export -f requirements.txt --output requirements.txt
 ```
-
-Exits `0` when nothing is found and `1` when it finds something, so a CI job
-fails on a vulnerable dependency. Usage errors exit `2`, so a broken invocation
-never looks like a vulnerability.
 
 | Option | What it does |
 |---|---|
@@ -70,7 +78,23 @@ scanner requirements.txt --ignore CVE-2025-50181
 scanner requirements.txt --min-severity HIGH --stale-after 730
 ```
 
-### Output
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Ran, asked every source, found nothing |
+| `1` | Found at least one vulnerability |
+| `2` | Usage error — bad arguments, unreadable or unrecognised manifest |
+| `3` | **Ran, found nothing, but a source did not finish** |
+| `130` | Interrupted with Ctrl-C |
+
+`3` exists because "nothing found" and "nothing there" are not the same
+sentence. If OSV is unreachable or GitHub rate-limits halfway through, the scan
+has not proved anything, and a pipeline that treated that as a pass would turn
+an outage into a clean bill of health. A real finding outranks it: with both a
+finding and a failed source, the exit code is `1`.
+
+## Output
 
 Real output, `tests/fixtures/demo.txt`, 2.3 seconds:
 
@@ -90,9 +114,9 @@ HIGH       CVE-2025-66418   2.6.0      urllib3 allows an unbounded number of
                                        links in the decompression chain
 ```
 
-The remediation line names the package you actually have to change, which is
-not always the vulnerable one. On a JavaScript monorepo the package to change
-is one of the project's own workspaces:
+**The remediation line names the package you actually have to change, which is
+not always the vulnerable one.** On a JavaScript monorepo it is one of the
+project's own workspaces:
 
 ```
 tests/fixtures/npm/monorepo/package.json
@@ -114,16 +138,101 @@ body-parser 1.19.0  (via @acme/api -> express)
 
 `body-parser` is the vulnerable package and `express` is what you edit — a
 transitive package is pinned by whatever required it, so bumping `body-parser`
-in the manifest would do nothing. That is what the graph is for, and it is what
-a flat package list cannot tell you.
+in the manifest would do nothing. That is what the dependency graph is for, and
+it is what a flat package list cannot tell you.
 
 `1 requirements (3 packages)` is not a typo: the root `package.json` declares
 one dependency, and the two workspace packages are direct as well — they are
-code the project ships rather than something it pulled in, which is how `npm ls`
-counts them too.
+code the project ships rather than something it pulled in, which is how
+`npm ls` counts them too.
+
+Two more sections appear when they have anything to say, and they mean
+different things:
+
+```
+conflicts 3, each scanned at the version shown:
+  django 4.2.7: conflicting constraints: ==4.2.7,>=5.2
+  redis 5.0.1: conflicting constraints: !=4.5.5,<5.0.0,==5.0.1,>=4.5.2
+
+could not resolve 1:
+  light-s3-client: no release satisfies ==0.0.41 (latest is 0.0.40)
+```
+
+A **conflict** was resolved and scanned, at the version named — something later
+in the walk disagreed with the choice. An **unresolved** package has no version
+at all, so it was never queried and is excluded from every count.
 
 `--format json` carries everything the console shows plus the advisory URLs,
 the full dependency path, and the list of manifest lines that were skipped.
+
+## What it does not do
+
+Worth being explicit, because a scanner that quietly looks at less reports
+fewer vulnerabilities, and on screen that is indistinguishable from a clean
+project.
+
+- **It finds known vulnerabilities only.** A package with no advisory reports
+  as clean, which is not the same as safe. A newly published malicious package
+  has no CVE to find, by construction. This is the largest gap between this and
+  a tool like Socket, which also does behavioural and malware analysis,
+  typosquat detection and reachability.
+- **It does not tell you whether the vulnerable code is reachable.** Every CVE
+  in the tree is reported with equal weight.
+- **It does not separate production from development dependencies.** On OWASP
+  NodeGoat, 750 of the 1,073 packages scanned — 70% — are reachable only
+  through `devDependencies`. There is no `--omit dev` yet; there should be.
+- **It does not install or build anything.** A package that computes its
+  requirements at build time is invisible, deliberately.
+- **It reads two ecosystems.** `poetry.lock`, `Pipfile.lock`, `pnpm-lock.yaml`,
+  `go.mod`, `Gemfile.lock` and the rest are named and refused, never guessed at.
+- **A scan sends package names to a third party.** Private workspace package
+  names in a monorepo are included, since the tool asks OSV about every
+  resolved package.
+
+## Known limitations
+
+- **No backtracking, and resolution order decides.** A package is resolved at
+  the first requirement the breadth-first walk reaches for it; later
+  requirements are checked against that choice rather than folded into it.
+  Direct dependencies are queued before the walk starts, so a manifest pin
+  always beats a transitive request — but two packages at the same depth
+  constraining a third are not intersected first: `a` needing `shared>=1.0`
+  alongside `b` needing `shared<2.0` resolves `shared` to the newest release,
+  where pip installs the one satisfying both. The disagreement is always
+  reported as a conflict, so the answer is visible rather than silent. On the
+  Airflow constraints file the measured cost is one version out of 715.
+- **Some conflicts are artifacts.** Markers are deliberately not evaluated for
+  the local machine, so a package declaring `urllib3<1.27` under
+  `python_version < "3.10"` and a different range above it has both branches
+  intersected. Each entry prints the combined specifier so a reader can judge
+  it; the tool does not yet say which kind you are looking at.
+- **Yanked releases are treated as installable.** `_best_match` does not read
+  PEP 592 yanked markers, so `cryptography<=45.0.0` resolves to 45.0.0 where
+  pip and uv both pick 44.0.3. Findings can attach to a version nobody would
+  install.
+- **Requests are sequential.** Measured: 1,073 packages in 3 minutes 34
+  seconds, about 0.20 s per package, nearly all of it waiting on OSV. The
+  requests are independent, so this is the first thing to parallelise.
+- **Severity is a word, not a score.** Records carrying only a CVSS vector are
+  reported as `UNKNOWN` rather than scored by a hand-rolled implementation of
+  the CVSS formula. `--min-severity` never hides an `UNKNOWN`.
+
+### JavaScript specifically
+
+- **A lock file is required.** `package.json` alone names ranges; resolving
+  those means implementing npm's semver grammar and a second resolver. Refused
+  with `npm install --package-lock-only`, which needs no network.
+- **`--stale-after` finds nothing**, because a lock file carries no release
+  dates. The tool says so rather than reporting zero.
+- **`lockfileVersion 1`** (npm 6, end of life 2022) is named and refused rather
+  than misread — its shape is different enough that reading it as a modern lock
+  finds no packages at all.
+- **Aliased packages get imprecise remediation.** `"utils": "npm:lodash@4.17.15"`
+  is correctly identified and scanned as `lodash`, but the advice names
+  `lodash` where the manifest key is `utils`.
+- **yarn does not follow peerDependencies** where npm 7 and later do, so the
+  same project scans slightly differently depending on which lock you have.
+  That matches the tools themselves.
 
 ## How it works
 
@@ -160,8 +269,8 @@ manifest ─→ dispatch ┤                                              ├─
 **A lock file is a resolution somebody already performed and committed**, so
 the JavaScript path skips the resolver entirely. That is not a shortcut, it is
 the only correct answer: `resolver.py` exists to collapse a package name to one
-version, and npm routinely installs several. On `tests/fixtures/npm/nested`,
-a three-dependency project puts `ms` on disk at 2.0.0, 2.1.1 and 2.1.3 at once.
+version, and npm routinely installs several. On `tests/fixtures/npm/nested`, a
+three-dependency project puts `ms` on disk at 2.0.0, 2.1.1 and 2.1.3 at once.
 
 The branch is six lines in `cli.py` and is left visible rather than hidden
 behind one uniform call, because the difference between the two paths is the
@@ -174,17 +283,16 @@ console — never learns there is more than one ecosystem.
 
 Four at runtime, each carrying its weight:
 
-- **`packaging`** (PyPA) for version specifiers, environment markers, and PEP 503
-  name canonicalization. Using `canonicalize_name()` means package names normalize
-  exactly the way pip normalizes them, so `zope.interface`, `zope-interface` and
-  `zope_interface` are correctly treated as one project rather than three. Its
-  marker evaluation is what makes `celery[redis]` pull in redis while plain
-  `celery` does not.
+- **`packaging`** (PyPA) for version specifiers, environment markers and PEP 503
+  name canonicalization. Using `canonicalize_name()` means package names
+  normalize exactly the way pip normalizes them, so `zope.interface`,
+  `zope-interface` and `zope_interface` are correctly one project rather than
+  three. Its marker evaluation is what makes `celery[redis]` pull in redis while
+  plain `celery` does not.
 - **`requests`** for HTTP, with `urllib3`'s own `Retry` for backoff — it already
-  ships underneath requests and honours `Retry-After`, so there was nothing to
-  hand-roll.
+  ships underneath requests and honours `Retry-After`.
 - **`rich`** for the findings table. Two hundred findings printed four lines each
-  is unreadable; as a table it is one line each and long summaries wrap to the
+  is unreadable; as a table it is one line each, and long summaries wrap to the
   terminal instead of running off it.
 - **`pyyaml`** for yarn berry locks, which are real YAML. Yarn 1 locks are not,
   and are read by hand — see below.
@@ -206,6 +314,10 @@ name uses it — including the two that match an advisory's own name, where
 getting it wrong deletes the "fixed in" column and the upgrade advice while
 still showing the finding.
 
+OSV does normalize PyPI names on its side (`Products.CMFPlone` and
+`products-cmfplone` return identical results), so the Python half is safe by
+the registry's own rule as well as ours.
+
 ### Why the yarn 1 reader is written here rather than imported
 
 Yarn berry writes real YAML and is read with PyYAML. Yarn 1 writes a format
@@ -214,7 +326,7 @@ whose entries are `name "range"` pairs with no colon.
 
 Both yarn.lock parsers on PyPI were tried. Both get the same thing wrong — a
 single resolution often satisfies several requirements, and yarn writes them as
-one comma separated key:
+one comma-separated key:
 
 ```
 "@babel/generator@^7.29.7", "@babel/generator@^7.29.8":
@@ -224,40 +336,31 @@ Neither library splits it, so a lookup for either range finds nothing. Measured
 on the lock under `tests/fixtures/npm/yarn-v1`: 94 entries, of which **11 carry
 a joined key covering 22 ranges** — and **42 of the 168 edge lookups in the
 file, 25%, are answered by one of them**. Those edges would silently resolve to
-nothing.
-
-Neither library has shipped a release in over a year, which is the signal this
-tool exists to surface. Twenty lines here, cross-checked against both, was the
-better trade.
+nothing. Neither library has shipped a release in over a year, which is the
+signal this tool exists to surface.
 
 ### Why not `pip-requirements-parser`
 
-`pip-requirements-parser` wraps pip's own internal parsing code and handles more
-requirements-file syntax than this project does, including the full set of pip
-options.
+It wraps pip's own parsing code and handles more requirements-file syntax than
+this does. Its last release was December 2022, and adding an unmaintained
+dependency to a supply chain security tool is the wrong trade to make here.
+`packaging.Requirement` already covers the requirement grammar; the rest —
+joining line continuations, recognising pip options, editable installs, VCS
+references and direct URLs — is small enough to own outright and explain.
 
-I chose not to use it. Its last release was December 2022, and adding an
-unmaintained dependency to a supply chain security tool is the wrong tradeoff to
-make here: "no releases in the last N months" is precisely the signal this kind of
-scanner exists to surface. `packaging.Requirement` already covers the requirement
-grammar itself, and the remaining work (joining line continuations, recognising
-pip options, editable installs, VCS references and direct URLs before attempting
-to parse a line) is small enough to own outright and explain.
-
-The cost of that decision is that some rarer pip syntax is skipped rather than
-interpreted. Skipped lines are recorded rather than silently dropped, so the report
-can say what it did not understand.
+The cost is that rarer pip syntax is skipped rather than interpreted. Skipped
+lines are recorded rather than dropped, so the report can say what it did not
+read — and a file where *nothing* could be read is refused outright rather than
+reported as clean. A `requirements.txt` that only lists `-r` includes is the
+common way to hit that.
 
 ### Why one request per package, not OSV's batch endpoint
 
-`POST /v1/querybatch` takes many packages at once, but it returns vulnerability
+`POST /v1/querybatch` takes many packages at once, but returns vulnerability
 ids rather than records — anything worth showing a user needs a second request
 per id. So its cost is `packages + vulnerabilities`, and the second term is
-unbounded.
-
-Per-package is bounded by the package count, so a stale manifest costs the same
-as a clean one. That is the trade I want: worse best case on a healthy project,
-predictable worst case on a neglected one.
+unbounded. Per-package is bounded by the package count, so a stale manifest
+costs the same as a clean one: worse best case, predictable worst case.
 
 ### Why GitHub is only asked about gaps
 
@@ -277,21 +380,12 @@ REST rather than GraphQL because GitHub's unauthenticated GraphQL limit is zero 
 the tool would do nothing at all for anyone without a token — and because
 `?cve_id=` is exactly the question being asked.
 
-### Why severity is a word and not a number
-
-Some records carry only a CVSS vector string. Turning one into a score means
-implementing the CVSS formula, and getting it subtly wrong would mislabel how
-serious something is. Asking GitHub instead resolves every vector-bearing record
-in practice. Anything still unresolved is reported as `UNKNOWN` rather than
-guessed at, and `--min-severity` never hides those — unknown means we could not
-determine it, not that it does not matter.
-
 ## Verified against other tools
 
 Correctness here is checked against implementations written by other people,
 because a test suite that only asserts the code does what the code was written
 to do will agree with a bug. That is not hypothetical: an earlier resolver bug
-reported 434 of 805 packages at two versions and 295 passing tests said nothing.
+reported 434 of 805 packages at two versions, and 295 passing tests said nothing.
 
 ### Python, against `uv pip compile`
 
@@ -310,22 +404,21 @@ The 25 extras are packages uv drops for this interpreter and we keep on purpose
 scanned on a Mac may well be installed on Windows, so markers are not evaluated
 for the local platform and the answer is a deliberate superset.
 
-**The one disagreement is `apache-airflow` itself, and it is the no-backtracking
-limitation with a name on it.** The constraints file does not pin it; a provider
-requires `apache-airflow>=2.7.0`. uv backtracks and lands on 2.9.3. We take the
-newest release satisfying the constraint, 3.3.1, and never revisit it. Run with
-`apache-airflow==2.9.3` added — how the file is actually meant to be used — and
-the disagreement disappears.
+The one disagreement is `apache-airflow` itself, and it is the no-backtracking
+limitation with a name on it: the file does not pin it, a provider requires
+`>=2.7.0`, uv backtracks to 2.9.3 and we take the newest satisfying release.
 
-Run it: `pytest -m network`.
+That run was a one-off against the Airflow file. `pytest -m network` runs the
+same four comparisons continuously against a smaller fixture: nothing uv
+installs is missed, no package resolves at two versions, at most one version
+differs, and every extra package is one uv dropped for this interpreter.
 
 ### JavaScript, against `npm ls --all --json --package-lock-only`
 
 npm reads the lock offline, so this runs in the ordinary suite. Across three
 fixtures including OWASP NodeGoat's 1,391 lock entries: nothing missing,
 nothing extra, no dangling edges. NodeGoat resolves to 1,073 packages nested
-twelve deep, with 36 direct — the 16 dependencies and 20 devDependencies its
-`package.json` declares.
+twelve deep, with 36 direct.
 
 The one deliberate difference is aliases. `npm ls` reports an aliased dependency
 under the name it was declared as, because it is describing the tree on disk. We
@@ -333,103 +426,60 @@ report the name the registry knows, because we are about to ask an advisory
 database about it — and `utils` has no advisories while `lodash@4.17.11` has
 several.
 
-### yarn 1 against berry
+### The two lock formats against each other, and against `npm audit`
 
-`npm ls` cannot read a yarn.lock, so the two formats are checked against each
-other. Same `package.json`, two files that look nothing alike, **94 packages
-each and identical package names**. One version differs — `electron-to-chromium`
-at 1.5.407 against 1.5.406 — because the two locks were generated on different
-days and the range floats. That is the lock files disagreeing, not the readers.
+A six-dependency project, locked twice — once with `npm install
+--package-lock-only`, once with `yarn install`:
 
-### Socket's own CLI, by hand
+```
+package-lock.json   355 packages resolved (6 direct, 349 transitive)   1 vulnerable, 3 findings
+yarn.lock           355 packages resolved (6 direct, 349 transitive)   1 vulnerable, 3 findings
+```
 
-It agrees on aliases. It differs on workspace packages, naming them by directory
-where `npm ls` and this tool use the name in their `package.json` — `api` rather
-than `@acme/api`, and `api` is a real package on the public registry.
+Identical, from two files that look nothing alike. `npm audit` on the same
+project independently reports one vulnerable package, `jsonwebtoken`, which is
+the one we report.
 
-## Limitations
-
-- **No backtracking.** A package is resolved once, against every constraint seen
-  before that point. A constraint arriving afterwards that would have narrowed the
-  choice is reported as a conflict rather than applied, because revisiting it would
-  invalidate the subtree already walked. On Airflow that costs exactly one version
-  out of 715, named above.
-- **Conflicts are reported, not diagnosed, and some are artifacts.** The same
-  Airflow run records 45 conflict entries across 9 distinct packages. The count
-  inflates because every later requester of an already-settled package re-checks
-  it: `urllib3` alone accounts for 21 of the 45. And at least that one is
-  spurious — `opensearch-py` declares `urllib3<1.27` under
-  `python_version < "3.10"` and a different range above it, and because markers
-  are deliberately not evaluated for the local platform, both branches are
-  intersected. Each entry prints the combined specifier so a reader can judge it,
-  but the tool does not yet tell you which kind you are looking at.
-- **Dependencies are read, not built.** Metadata comes from PyPI's JSON API, so
-  nothing being scanned is ever downloaded or executed. The cost is that a package
-  computing its requirements at build time is invisible — pip sees those because it
-  builds; we do not, deliberately.
-- **Requests are sequential.** Measured: 1,073 packages in 3 minutes 34 seconds,
-  about 0.20 s per package, nearly all of it waiting on OSV. The requests are
-  independent, so this is the obvious next thing to parallelise.
-- **Known vulnerabilities only.** A package with no CVE reports as clean, which is
-  not the same as safe — a brand new malicious package has no advisory to find.
-- **Two ecosystems.** `poetry.lock`, `Pipfile.lock`, `go.mod`, `Gemfile.lock`
-  and the rest are named and refused. That refusal is deliberate and was added
-  after finding the alternative: an unrecognised file used to reach the
-  requirements reader, fail to parse every line, and report a clean scan
-  exiting 0. `Gemfile.lock` was worse than silent — it read `GEM` and `rails`
-  as Python package names, found them on PyPI, and scanned three packages the
-  project does not have. A scanner is only allowed to say "clean" about
-  something it actually read.
-
-### JavaScript specifically
-
-- **A lock file is required.** `package.json` alone names ranges, and resolving
-  those means implementing npm's semver grammar and a second resolver. It is
-  refused with `npm install --package-lock-only`, which needs no network. This
-  is a deliberate choice, not an omission: inventing versions a user may not
-  have installed is how a scanner starts reporting things that are not there.
-- **`--stale-after` does nothing.** A lock file carries no release dates. The
-  tool says so rather than reporting zero, which would read as "none found"
-  when it means "never looked".
-- **`lockfileVersion 1`** (npm 6, end of life 2022) is named and refused rather
-  than misread. Its shape is different enough that reading it as a modern lock
-  finds no packages at all.
-- **Aliased packages get imprecise remediation.** `"utils": "npm:lodash@4.17.15"`
-  is correctly identified and scanned as `lodash`, but the advice says to
-  upgrade `lodash` where the manifest key is `utils`. The finding is right; the
-  sentence names the wrong key.
-- **yarn does not follow peerDependencies** where npm does. That matches the
-  tools, but it means an npm lock and a yarn lock of the same project differ.
-- **pnpm and bun** are named and refused, like every other format this does
-  not read.
+On the larger fixtures the two yarn readers are checked against each other:
+same `package.json`, **94 packages each with identical names**. One version
+differs, because the locks were generated on different days and the range
+floats — the lock files disagree, not the readers.
 
 ## Development
 
 ```bash
-pytest            # 441 tests, no network — every client takes an injected session
+pytest            # 462 tests, no network — every client takes an injected session
 pytest -m network # 4 more, comparing against `uv pip compile`
 ruff format .
 ruff check .
 mypy scanner/ tests/
 ```
 
-445 tests in total. The default suite needs `npm` on PATH for the comparison
-tests and skips them without it. It never reaches the network.
+The default suite needs `npm` on PATH for the comparison tests and skips them
+without it. It never reaches the network.
 
 Fixtures under `tests/fixtures/` include two collections of things that show up
 in real manifests and should not take a scan down: `hostile.txt` for Python, and
 `npm/hostile/` for JavaScript — an alias, a `file:` path, a git dependency and an
-optional peer nobody installed, in one manifest. `npm/broken` cases live in the
+optional peer nobody installed, in one manifest. Broken npm cases live in the
 tests themselves: a byte order mark, a trailing comma, a lock that is a JSON
 array, a dependency cycle.
 
 ### A note on the test suite
 
-Deleting the `canonicalize_name` call from `pypi.py` once passed all 422 tests
-then in the suite, including the one named after the behaviour it breaks. That
-test asserted `fetch(...) is not None`, and `fetch` returns a `PackageMetadata`
-even for a 404. It now asserts the URL actually requested, and fails when the
-call is removed; three other tests that could not fail were fixed the same way.
+Test count is not coverage. Deleting the `canonicalize_name` call from
+`pypi.py` once passed all 422 tests then in the suite, including the one named
+after the behaviour it breaks — it asserted `fetch(...) is not None`, and
+`fetch` returns a `PackageMetadata` even for a 404. It now asserts the URL
+actually requested, and three other tests that could not fail were fixed the
+same way.
 
-Test count is not coverage. Mutation testing the rest is the first thing on the
-list.
+The suite is checked by mutation: change a decision, run the tests, and see
+whether anything fails. 18 mutations of real decisions — folding npm names like
+PyPI names, moving `graph.link` below the visited check, ignoring node_modules
+shadowing, reading an alias off its install path, hiding `UNKNOWN` severities,
+taking the exit code from the printed list — are caught by the tests that name
+them. The one that is not is documented above: the constraint fold in
+`resolver.py` cannot change which version is chosen, only what the conflict
+report says, because a package is fetched at its first pop when nothing else
+has been folded in yet.
