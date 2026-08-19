@@ -1,4 +1,4 @@
-# Dependency risk scanner
+# Dependency Risk Scanner
 
 Scans a dependency manifest, resolves every package it installs — direct and
 transitive — and reports the ones with known vulnerabilities, what to upgrade,
